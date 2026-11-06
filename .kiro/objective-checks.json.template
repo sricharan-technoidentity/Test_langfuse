@@ -1,26 +1,26 @@
 {
-  "$schema": "objective-checks-schema.json",
-  "$comment": "Task3 objective check commands for this Python repo. Run after workflow completion.",
+  "$comment": "Task3 objective check configuration. Copy to .kiro/objective-checks.json and customize.",
   
   "build_pass": {
-    "command": "python3 -m py_compile .kiro/hooks/langfuse_kiro_hook.py .kiro/hooks/tracing_context.py .kiro/hooks/objective_scores.py .kiro/hooks/langfuse_scores.py .kiro/hooks/dashboard_config.py",
-    "description": "Compile all hook Python modules to check for syntax errors",
+    "command": ["python3", "-m", "py_compile", ".kiro/hooks/langfuse_kiro_hook.py", ".kiro/hooks/tracing_context.py", ".kiro/hooks/objective_scores.py", ".kiro/hooks/langfuse_scores.py", ".kiro/hooks/dashboard_config.py", ".kiro/hooks/dashboard_provision.py", ".kiro/hooks/finalize_workflow.py"],
+    "description": "Compile all Python hook modules (syntax check only - this repo has no package build)",
     "timeout_seconds": 30,
-    "enabled": true
+    "enabled": true,
+    "$note": "This is syntax compilation, not a full package build. For projects with setup.py/pyproject.toml, use 'python3 -m build' or similar."
   },
   
   "test_pass": {
-    "command": "python3 -m pytest tests/ -v --tb=short -q",
-    "description": "Run all pytest tests in the tests/ directory",
+    "command": ["python3", "-m", "pytest", "tests/", "-v", "--tb=short", "-q"],
+    "description": "Run pytest test suite",
     "timeout_seconds": 120,
     "enabled": true
   },
   
   "lint_clean": {
-    "command": "python3 -m py_compile .kiro/hooks/*.py && echo 'Syntax OK'",
-    "description": "Check Python syntax (no external linter installed). For proper linting, install ruff or flake8.",
-    "timeout_seconds": 30,
+    "command": ["python3", "-m", "ruff", "check", ".kiro/hooks/", "--select=E,F,W", "--ignore=E501,W293"],
+    "description": "Run ruff linter (errors, pyflakes, warnings; ignore line length and docstring whitespace)",
+    "timeout_seconds": 60,
     "enabled": true,
-    "$note": "This is a minimal check. For production, use: python3 -m ruff check .kiro/hooks/ --select=E,F,W"
+    "$note": "Requires: pip install ruff. For stricter checks, remove --ignore flags."
   }
 }

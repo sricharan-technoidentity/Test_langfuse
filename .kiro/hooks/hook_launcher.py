@@ -48,41 +48,41 @@ def main() -> int:
     except Exception as e:
         print(f"launcher: stdin read failed: {e}", file=sys.stderr)
         return 0  # fail-open
-    
+
     try:
         event = json.loads(event_raw)
     except json.JSONDecodeError as e:
         print(f"launcher: JSON parse failed: {e}", file=sys.stderr)
         return 0  # fail-open
-    
+
     # Extract workspace cwd from event (this is the correct workspace path)
     workspace_cwd = event.get("cwd", "")
     if not workspace_cwd:
         # Fallback: try environment or current directory (less reliable)
         workspace_cwd = os.environ.get("KIRO_WORKSPACE_CWD", os.getcwd())
-    
+
     workspace_path = Path(workspace_cwd)
-    
+
     # Resolve paths relative to workspace
     env_file = os.environ.get("KIRO_LF_ENV_FILE")
     if env_file and not os.path.isabs(env_file):
         env_file = str(workspace_path / env_file)
     else:
         env_file = str(workspace_path / ".kiro" / "langfuse.local.env")
-    
+
     state_dir_env = os.environ.get("KIRO_LF_STATE")
     if state_dir_env and not os.path.isabs(state_dir_env):
         state_dir = workspace_path / state_dir_env
     else:
         state_dir = workspace_path / ".kiro" / "langfuse-state-local"
-    
+
     hook_script = workspace_path / ".kiro" / "hooks" / "langfuse_kiro_hook.py"
-    
+
     # Set environment variables for the hook
     os.environ["KIRO_LF_ENV_FILE"] = env_file
     os.environ["KIRO_LF_STATE"] = str(state_dir)
     os.environ["KIRO_WORKSPACE_CWD"] = workspace_cwd
-    
+
     # Always log diagnostic to confirm invocation (this creates state_dir if needed)
     hook_name = event.get("hook_event_name", "unknown")
     session_id = event.get("session_id", "unknown")
@@ -91,12 +91,12 @@ def main() -> int:
         f"INVOKED hook={hook_name} session={session_id} workspace={workspace_cwd} "
         f"shell_cwd={os.getcwd()} hook_exists={hook_script.exists()} env_exists={Path(env_file).exists()}"
     )
-    
+
     # Check if hook script exists
     if not hook_script.exists():
         log_diagnostic(state_dir, f"ERROR: hook script not found: {hook_script}")
         return 0  # fail-open
-    
+
     # Load env file and check tracing status BEFORE calling hook
     env_loaded = False
     if Path(env_file).exists():
@@ -112,19 +112,19 @@ def main() -> int:
             log_diagnostic(state_dir, f"WARNING: failed to load env file: {e}")
     else:
         log_diagnostic(state_dir, f"WARNING: env file not found: {env_file}")
-    
+
     # Log tracing configuration status
     trace_enabled = os.environ.get("TRACE_TO_LANGFUSE", "").lower() == "true"
     has_public_key = bool(os.environ.get("LANGFUSE_PUBLIC_KEY"))
     has_secret_key = bool(os.environ.get("LANGFUSE_SECRET_KEY"))
     base_url = os.environ.get("LANGFUSE_BASE_URL", "not-set")
-    
+
     log_diagnostic(
         state_dir,
         f"CONFIG env_loaded={env_loaded} TRACE_TO_LANGFUSE={trace_enabled} "
         f"has_keys={has_public_key and has_secret_key} base_url={base_url}"
     )
-    
+
     if not trace_enabled:
         log_diagnostic(
             state_dir,
@@ -132,14 +132,14 @@ def main() -> int:
             f"Set TRACE_TO_LANGFUSE=true in {env_file}"
         )
         return 0  # Not an error, just disabled
-    
+
     if not has_public_key or not has_secret_key:
         log_diagnostic(
             state_dir,
             f"SKIPPED: Missing LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY in {env_file}"
         )
         return 0
-    
+
     # Import and execute the hook
     try:
         import importlib.util
@@ -147,19 +147,19 @@ def main() -> int:
         if spec is None or spec.loader is None:
             log_diagnostic(state_dir, f"ERROR: failed to load hook spec: {hook_script}")
             return 0
-        
+
         module = importlib.util.module_from_spec(spec)
         sys.modules["langfuse_kiro_hook"] = module
         spec.loader.exec_module(module)
-        
+
         # Call the handler with the event
         module.handle_event(event)
         log_diagnostic(state_dir, f"SUCCESS hook={hook_name} session={session_id}")
-        
+
     except Exception as e:
         log_diagnostic(state_dir, f"ERROR: hook execution failed: {type(e).__name__}: {e}\n{traceback.format_exc()}")
         return 0  # fail-open
-    
+
     return 0
 
 

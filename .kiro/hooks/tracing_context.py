@@ -134,7 +134,7 @@ def _repo_from_remote(url: str | None) -> str | None:
     u = url.rstrip("/")
     if u.endswith(".git"):
         u = u[:-4]
-    
+
     # Handle SSH URLs: git@host:org/repo
     if ":" in u and not u.startswith("http"):
         u = u.split(":", 1)[-1]
@@ -142,7 +142,7 @@ def _repo_from_remote(url: str | None) -> str | None:
         if len(parts) >= 2:
             return f"{parts[-2]}/{parts[-1]}"
         return parts[-1] if parts else None
-    
+
     # Handle HTTPS URLs (possibly with credentials): https://[user:pass@]host/org/repo
     if u.startswith("http://") or u.startswith("https://"):
         # Strip scheme
@@ -158,7 +158,7 @@ def _repo_from_remote(url: str | None) -> str | None:
         elif len(parts) == 2:
             return parts[-1]
         return None
-    
+
     # Fallback for other URL formats
     parts = u.replace("\\", "/").split("/")
     if len(parts) >= 2:

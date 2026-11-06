@@ -11,7 +11,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import time
 import urllib.error
 import urllib.request
@@ -28,7 +27,7 @@ RETRY_BACKOFF_BASE = 2  # seconds
 DEFAULT_STATE_DIR = Path.home() / ".kiro" / "langfuse-state"
 
 
-@dataclass 
+@dataclass
 class ScoreSubmission:
     """A score to submit to Langfuse."""
     trace_id: str
@@ -38,7 +37,7 @@ class ScoreSubmission:
     comment: str | None = None
     metadata: dict | None = None
     observation_id: str | None = None
-    
+
     def to_api_payload(self) -> dict:
         """Convert to Langfuse API payload format."""
         payload = {
@@ -54,7 +53,7 @@ class ScoreSubmission:
         if self.observation_id:
             payload["observationId"] = self.observation_id
         return payload
-    
+
     def dedup_key(self) -> str:
         """Generate key for deduplication."""
         raw = f"{self.trace_id}:{self.name}:{self.value}:{self.data_type}"
@@ -66,7 +65,7 @@ class LangfuseScoreClient:
     
     Uses POST /api/public/scores endpoint (stable, not deprecated).
     """
-    
+
     def __init__(
         self,
         base_url: str,
@@ -79,7 +78,7 @@ class LangfuseScoreClient:
         self.state_dir = state_dir or DEFAULT_STATE_DIR
         self._submitted_keys: set[str] = set()
         self._load_submitted_keys()
-    
+
     def _load_submitted_keys(self) -> None:
         """Load previously submitted score keys for deduplication."""
         path = self.state_dir / "submitted_scores.json"
@@ -93,7 +92,7 @@ class LangfuseScoreClient:
             }
         except (OSError, json.JSONDecodeError):
             self._submitted_keys = set()
-    
+
     def _save_submitted_key(self, key: str) -> None:
         """Save a submitted key for deduplication."""
         self._submitted_keys.add(key)
@@ -113,11 +112,11 @@ class LangfuseScoreClient:
             path.write_text(json.dumps(data))
         except OSError:
             pass  # Best effort
-    
+
     def is_already_submitted(self, submission: ScoreSubmission) -> bool:
         """Check if a score was already submitted."""
         return submission.dedup_key() in self._submitted_keys
-    
+
     def submit_scores(
         self,
         submissions: list[ScoreSubmission],
@@ -132,7 +131,7 @@ class LangfuseScoreClient:
             "skipped": 0,
             "errors": [],
         }
-        
+
         # Filter duplicates
         to_submit = []
         for sub in submissions:
@@ -140,13 +139,13 @@ class LangfuseScoreClient:
                 results["skipped"] += 1
             else:
                 to_submit.append(sub)
-        
+
         if not to_submit:
             return results
-        
+
         # Build payload (API accepts array)
         payloads = [s.to_api_payload() for s in to_submit]
-        
+
         # Submit with retry
         last_error = None
         for attempt in range(MAX_RETRIES):
@@ -161,10 +160,10 @@ class LangfuseScoreClient:
                 last_error = e
                 if attempt < MAX_RETRIES - 1:
                     time.sleep(RETRY_BACKOFF_BASE ** attempt)
-        
+
         results["errors"].append(str(last_error))
         return results
-    
+
     def _post_scores(self, payloads: list[dict]) -> dict:
         """POST scores to Langfuse API."""
         url = f"{self.base_url}/api/public/scores"
@@ -173,7 +172,7 @@ class LangfuseScoreClient:
             "Content-Type": "application/json",
         }
         body = json.dumps(payloads).encode()
-        
+
         req = urllib.request.Request(url, data=body, method="POST", headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=SCORE_API_TIMEOUT) as resp:
@@ -207,14 +206,14 @@ def submit_objective_scores(
         Dict with submission results
     """
     from objective_scores import result_to_langfuse_score, CheckResult
-    
+
     client = LangfuseScoreClient(base_url, public_key, secret_key, state_dir)
-    
+
     submissions = []
     for name, result in results.items():
         if not isinstance(result, CheckResult):
             continue
-        
+
         score_data = result_to_langfuse_score(result, trace_id, workflow_run_id)
         submissions.append(ScoreSubmission(
             trace_id=score_data["traceId"],
@@ -224,7 +223,7 @@ def submit_objective_scores(
             comment=score_data.get("comment"),
             metadata=score_data.get("metadata"),
         ))
-    
+
     return client.submit_scores(submissions)
 
 
@@ -233,11 +232,11 @@ class PendingScoreQueue:
     
     Used for retry/recovery when Langfuse is temporarily unavailable.
     """
-    
+
     def __init__(self, state_dir: Path | None = None):
         self.state_dir = state_dir or DEFAULT_STATE_DIR
         self.queue_file = self.state_dir / "pending_scores.jsonl"
-    
+
     def enqueue(self, submission: ScoreSubmission) -> None:
         """Add a score to the pending queue."""
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -248,7 +247,7 @@ class PendingScoreQueue:
         }
         with open(self.queue_file, "a") as f:
             f.write(json.dumps(entry) + "\n")
-    
+
     def get_pending(self, max_age_hours: int = 24) -> list[dict]:
         """Get pending scores not older than max_age_hours."""
         cutoff = time.time() - (max_age_hours * 3600)
@@ -266,12 +265,12 @@ class PendingScoreQueue:
         except OSError:
             pass
         return pending
-    
+
     def clear_submitted(self, dedup_keys: set[str]) -> None:
         """Remove successfully submitted scores from queue."""
         pending = self.get_pending()
         remaining = [p for p in pending if p.get("dedup_key") not in dedup_keys]
-        
+
         # Rewrite queue
         try:
             self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -295,34 +294,34 @@ def retry_pending_scores(
     state_dir = state_dir or DEFAULT_STATE_DIR
     queue = PendingScoreQueue(state_dir)
     client = LangfuseScoreClient(base_url, public_key, secret_key, state_dir)
-    
+
     pending = queue.get_pending()
     if not pending:
         return {"retried": 0, "succeeded": 0, "failed": 0}
-    
+
     succeeded_keys = set()
     failed_count = 0
-    
+
     for entry in pending:
         payload = entry.get("payload", {})
         dedup_key = entry.get("dedup_key")
-        
+
         if not payload or not dedup_key:
             continue
-        
+
         if dedup_key in client._submitted_keys:
             succeeded_keys.add(dedup_key)
             continue
-        
+
         try:
             client._post_scores([payload])
             client._save_submitted_key(dedup_key)
             succeeded_keys.add(dedup_key)
         except Exception:
             failed_count += 1
-    
+
     queue.clear_submitted(succeeded_keys)
-    
+
     return {
         "retried": len(pending),
         "succeeded": len(succeeded_keys),

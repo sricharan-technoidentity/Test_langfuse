@@ -70,7 +70,7 @@ def main():
         help="Show verbose output"
     )
     args = parser.parse_args()
-    
+
     # Find workspace
     workspace = args.workspace
     if not workspace:
@@ -82,15 +82,15 @@ def main():
                 workspace = str(check)
                 break
             check = check.parent
-    
+
     workspace_path = Path(workspace).resolve()
     kiro_dir = workspace_path / ".kiro"
     hooks_dir = kiro_dir / "hooks"
     launcher = hooks_dir / "hook_launcher.py"
     state_dir = kiro_dir / "langfuse-state-local"
     env_file = kiro_dir / "langfuse.local.env"
-    
-    print(f"=== Langfuse Hook Test ===")
+
+    print("=== Langfuse Hook Test ===")
     print(f"Workspace:     {workspace_path}")
     print(f"Hooks dir:     {hooks_dir} (exists: {hooks_dir.exists()})")
     print(f"Launcher:      {launcher} (exists: {launcher.exists()})")
@@ -99,12 +99,12 @@ def main():
     print(f"Hook event:    {args.hook_event}")
     print(f"Session ID:    {args.session_id}")
     print()
-    
+
     if not launcher.exists():
         print(f"ERROR: Launcher not found: {launcher}")
         print("Make sure you're in the correct workspace directory.")
         return 1
-    
+
     # Build test event
     event = {
         "hook_event_name": args.hook_event,
@@ -112,7 +112,7 @@ def main():
         "cwd": str(workspace_path),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
     }
-    
+
     if args.hook_event == "UserPromptSubmit":
         event["prompt"] = args.prompt
     elif args.hook_event in ("PreToolUse", "PostToolUse"):
@@ -123,23 +123,23 @@ def main():
             event["tool_response"] = {"test": "output"}
     elif args.hook_event == "Stop":
         event["reason"] = "test"
-    
-    print(f"Test event JSON:")
+
+    print("Test event JSON:")
     print(json.dumps(event, indent=2))
     print()
-    
+
     if args.dry_run:
         print("DRY RUN - not executing")
         return 0
-    
+
     # Write event to temp file
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tf:
         json.dump(event, tf)
         tf_path = tf.name
-    
+
     try:
         # Run launcher with event as stdin
-        print(f"Executing launcher...")
+        print("Executing launcher...")
         result = subprocess.run(
             ["python3", "-u", str(launcher)],
             stdin=open(tf_path),
@@ -148,18 +148,18 @@ def main():
             text=True,
             timeout=30,
         )
-        
+
         print(f"Exit code: {result.returncode}")
         if result.stdout:
             print(f"STDOUT:\n{result.stdout}")
         if result.stderr:
             print(f"STDERR:\n{result.stderr}")
         print()
-        
+
         # Check diagnostics
         launcher_log = state_dir / "launcher.log"
         errors_log = state_dir / "errors.log"
-        
+
         if launcher_log.exists():
             print(f"=== {launcher_log} (last 10 lines) ===")
             lines = launcher_log.read_text().strip().split('\n')
@@ -169,21 +169,21 @@ def main():
         else:
             print(f"WARNING: {launcher_log} was not created - hook may not have run")
             print()
-        
+
         if errors_log.exists():
             print(f"=== {errors_log} (last 10 lines) ===")
             lines = errors_log.read_text().strip().split('\n')
             for line in lines[-10:]:
                 print(f"  {line}")
             print()
-        
+
         # Check for session state
         session_state = state_dir / f"{args.session_id}.json"
         if session_state.exists():
             print(f"=== Session state ({session_state.name}) ===")
             print(session_state.read_text())
             print()
-        
+
         # Summary
         print("=== Summary ===")
         if launcher_log.exists() and "INVOKED" in launcher_log.read_text():
@@ -195,39 +195,27 @@ def main():
                 print("? Hook launcher invoked but status unclear")
         else:
             print("✗ Hook launcher did not create diagnostic log - invocation failed")
-        
-        # Check tracing configuration
-        if env_file.exists():
-            env_content = env_file.read_text()
-            env = {}
-            for line in env_content.splitlines():
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    env[k.strip()] = v.strip().strip("'\"")
-            
-            trace_enabled = env.get("TRACE_TO_LANGFUSE", "").lower() == "true"
-            has_public = bool(env.get("LANGFUSE_PUBLIC_KEY"))
-            has_secret = bool(env.get("LANGFUSE_SECRET_KEY"))
-            base_url = env.get("LANGFUSE_BASE_URL", "not configured")
-            
-            print(f"  TRACE_TO_LANGFUSE={trace_enabled}")
-            print(f"  Has credentials: public_key={has_public}, secret_key={has_secret}")
-            print(f"  Base URL: {base_url}")
-            
-            if not trace_enabled:
-                print("  ⚠ Tracing DISABLED - set TRACE_TO_LANGFUSE=true to enable")
-            elif not has_public or not has_secret:
-                print("  ⚠ Missing credentials - traces will not be sent")
+
+        # Check tracing configuration from launcher.log (NEVER read env file - contains secrets)
+        if launcher_log.exists():
+            log_text = launcher_log.read_text()
+            # Parse CONFIG line from launcher log (safe - no secrets logged)
+            for line in log_text.splitlines():
+                if "CONFIG " in line:
+                    print(f"  Tracing config from launcher: {line.split('CONFIG ', 1)[-1]}")
+                    break
             else:
-                print("  ✓ Tracing enabled and configured")
+                print("  Config status not found in launcher.log")
+
+        if env_file.exists():
+            print(f"  ✓ Env file exists at {env_file}")
+            print("    Check launcher.log CONFIG line for tracing status")
         else:
             print(f"  ⚠ No env file at {env_file}")
-            print(f"    Copy .kiro/langfuse.local.env.template to .kiro/langfuse.local.env")
-            print(f"    and configure your Langfuse credentials")
-        
+            print("    To enable tracing, ensure TRACE_TO_LANGFUSE=true is set")
+
         return result.returncode
-        
+
     except subprocess.TimeoutExpired:
         print("ERROR: Hook execution timed out after 30s")
         return 1

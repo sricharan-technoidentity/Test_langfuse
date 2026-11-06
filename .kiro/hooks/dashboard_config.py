@@ -97,7 +97,7 @@ class WidgetDefinition:
     breakdown_dimension: str | None = None
     filters: list[WidgetFilter] = field(default_factory=list)
     time_dimension: str = "timestamp"
-    
+
     def to_json(self) -> dict:
         """Export widget as JSON for Langfuse import."""
         return {
@@ -130,7 +130,7 @@ class DashboardDefinition:
     name: str
     description: str
     widgets: list[WidgetDefinition] = field(default_factory=list)
-    
+
     def to_json(self) -> dict:
         """Export dashboard as JSON for Langfuse import."""
         return {
@@ -179,7 +179,7 @@ def management_widgets() -> list[WidgetDefinition]:
                 WidgetFilter("userId", "is_not_null", True),
             ],
         ),
-        
+
         # Total Workflow Runs
         WidgetDefinition(
             name="Workflow Runs Per Week",
@@ -193,7 +193,7 @@ def management_widgets() -> list[WidgetDefinition]:
                 WidgetFilter("tags", "contains", "kiro-workflow-step"),
             ],
         ),
-        
+
         # Completion Rate by Status
         WidgetDefinition(
             name="Completion Rate by Status",
@@ -207,7 +207,7 @@ def management_widgets() -> list[WidgetDefinition]:
                 WidgetFilter("tags", "contains", "kiro-workflow-step"),
             ],
         ),
-        
+
         # Adoption by Team
         WidgetDefinition(
             name="Adoption by Team",
@@ -221,7 +221,7 @@ def management_widgets() -> list[WidgetDefinition]:
                 WidgetFilter("tags", "contains", "kiro-workflow-step"),
             ],
         ),
-        
+
         # Adoption by Repository
         WidgetDefinition(
             name="Adoption by Repository",
@@ -235,7 +235,7 @@ def management_widgets() -> list[WidgetDefinition]:
                 WidgetFilter("tags", "contains", "kiro-workflow-step"),
             ],
         ),
-        
+
         # Top Workflows
         WidgetDefinition(
             name="Top Workflows by Usage",
@@ -250,7 +250,7 @@ def management_widgets() -> list[WidgetDefinition]:
                 WidgetFilter("metadata.workflow.name", "is_not_null", True),
             ],
         ),
-        
+
         # Average Duration by Workflow
         WidgetDefinition(
             name="Average Duration by Workflow",
@@ -298,7 +298,7 @@ def engineering_widgets() -> list[WidgetDefinition]:
                 WidgetFilter("tags", "contains", "kiro-workflow-step"),
             ],
         ),
-        
+
         # Tool Error Rate
         WidgetDefinition(
             name="Tool Error Rate by Tool",
@@ -313,7 +313,7 @@ def engineering_widgets() -> list[WidgetDefinition]:
                 WidgetFilter("statusCode", "not_equals", 200),
             ],
         ),
-        
+
         # Tool Latency p50
         WidgetDefinition(
             name="Tool Latency p50",
@@ -327,7 +327,7 @@ def engineering_widgets() -> list[WidgetDefinition]:
                 WidgetFilter("type", "equals", "tool"),
             ],
         ),
-        
+
         # Tool Latency p95
         WidgetDefinition(
             name="Tool Latency p95",
@@ -341,7 +341,7 @@ def engineering_widgets() -> list[WidgetDefinition]:
                 WidgetFilter("type", "equals", "tool"),
             ],
         ),
-        
+
         # Tool Calls Per Run
         WidgetDefinition(
             name="Tool Calls Per Workflow Run",
@@ -355,7 +355,7 @@ def engineering_widgets() -> list[WidgetDefinition]:
                 WidgetFilter("tags", "contains", "kiro-workflow-step"),
             ],
         ),
-        
+
         # Failed Traces
         WidgetDefinition(
             name="Failed Traces (Error/Aborted)",
@@ -370,7 +370,7 @@ def engineering_widgets() -> list[WidgetDefinition]:
                 WidgetFilter("metadata.kiro.stop_reason", "in", ["error", "aborted"]),
             ],
         ),
-        
+
         # Build/Test/Lint Pass Rate (Task3 scores)
         WidgetDefinition(
             name="Objective Check Pass Rate",
@@ -423,9 +423,9 @@ def export_dashboards_json(output_dir: Path) -> dict[str, Path]:
     Returns dict of dashboard name -> file path.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     exports = {}
-    
+
     for dashboard, filename in [
         (get_management_dashboard(), "management-dashboard.json"),
         (get_engineering_dashboard(), "engineering-dashboard.json"),
@@ -433,23 +433,23 @@ def export_dashboards_json(output_dir: Path) -> dict[str, Path]:
         path = output_dir / filename
         path.write_text(json.dumps(dashboard.to_json(), indent=2))
         exports[dashboard.name] = path
-    
+
     return exports
 
 
 def export_widgets_json(output_dir: Path) -> dict[str, Path]:
     """Export individual widgets as JSON files."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     exports = {}
-    
+
     for i, widget in enumerate(management_widgets() + engineering_widgets()):
         safe_name = widget.name.lower().replace(" ", "-").replace("/", "-")[:50]
         filename = f"widget-{i:02d}-{safe_name}.json"
         path = output_dir / filename
         path.write_text(json.dumps(widget.to_json(), indent=2))
         exports[widget.name] = path
-    
+
     return exports
 
 
@@ -477,11 +477,11 @@ class LangfuseDashboardClient:
     
     Use npx langfuse-cli directly for actual provisioning.
     """
-    
+
     def __init__(self, base_url: str, public_key: str, secret_key: str):
         self.base_url = base_url.rstrip("/")
         self.auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
-    
+
     def _request(self, method: str, path: str, data: dict | None = None) -> dict:
         """Make an authenticated API request."""
         url = f"{self.base_url}{path}"
@@ -490,7 +490,7 @@ class LangfuseDashboardClient:
             "Content-Type": "application/json",
         }
         body = json.dumps(data).encode() if data else None
-        
+
         req = urllib.request.Request(url, data=body, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
@@ -498,7 +498,7 @@ class LangfuseDashboardClient:
         except urllib.error.HTTPError as e:
             error_body = e.read().decode() if e.fp else ""
             raise RuntimeError(f"API error {e.code}: {error_body}") from e
-    
+
     def check_api_available(self) -> tuple[bool, str]:
         """Check if the unstable dashboard API is available.
         
@@ -516,11 +516,11 @@ class LangfuseDashboardClient:
                 return False, f"API error: {e.code}"
         except Exception as e:
             return False, f"Connection error: {type(e).__name__}: {e}"
-    
+
     def list_dashboards(self) -> list[dict]:
         """List existing dashboards."""
         return self._request("GET", "/api/public/unstable/dashboards").get("data", [])
-    
+
     def create_dashboard(self, dashboard: DashboardDefinition) -> dict:
         """Create a new dashboard."""
         payload = {
@@ -528,7 +528,7 @@ class LangfuseDashboardClient:
             "description": dashboard.description,
         }
         return self._request("POST", "/api/public/unstable/dashboards", payload)
-    
+
     def create_widget(self, widget: WidgetDefinition) -> dict:
         """Create a new widget.
         
@@ -545,7 +545,7 @@ class LangfuseDashboardClient:
             "Use npx langfuse-cli api unstable-dashboard-widgets create directly. "
             "See dashboard_config.py docstring for correct API schema."
         )
-    
+
     def add_placement(self, dashboard_id: str, widget_id: str, x: int, y: int, width: int, height: int) -> dict:
         """Add a widget placement to a dashboard."""
         payload = {

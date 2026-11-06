@@ -80,7 +80,7 @@ class ObjectiveConfig:
     build: CheckCommand | None = None
     test: CheckCommand | None = None
     lint: CheckCommand | None = None
-    
+
     @classmethod
     def load(cls, cwd: str | None) -> "ObjectiveConfig":
         """Load config from workspace, fail gracefully."""
@@ -100,7 +100,7 @@ class ObjectiveConfig:
             )
         except (OSError, json.JSONDecodeError):
             return cls()
-    
+
     @staticmethod
     def _parse_check(data: Any, name: str, default_timeout: int) -> CheckCommand | None:
         """Parse a check command from config data."""
@@ -130,7 +130,7 @@ class ObjectiveConfig:
                 working_dir=data.get("working_dir"),
             )
         return None
-    
+
     def has_any_configured(self) -> bool:
         """Check if any checks are configured and enabled."""
         return any([
@@ -165,7 +165,7 @@ def run_check(check: CheckCommand, cwd: str | None) -> CheckResult:
             name=check.name,
             outcome=ScoreOutcome.SKIPPED,
         )
-    
+
     working_dir = check.working_dir or cwd
     if not working_dir or not Path(working_dir).is_dir():
         return CheckResult(
@@ -173,7 +173,7 @@ def run_check(check: CheckCommand, cwd: str | None) -> CheckResult:
             outcome=ScoreOutcome.ERROR,
             error_message=f"Working directory not found: {working_dir}",
         )
-    
+
     # Validate command is not empty
     if not check.command:
         return CheckResult(
@@ -181,7 +181,7 @@ def run_check(check: CheckCommand, cwd: str | None) -> CheckResult:
             outcome=ScoreOutcome.ERROR,
             error_message="Empty command",
         )
-    
+
     start_time = time.time()
     try:
         proc = subprocess.run(
@@ -193,9 +193,9 @@ def run_check(check: CheckCommand, cwd: str | None) -> CheckResult:
             env={**os.environ, "CI": "true"},
         )
         duration_ms = int((time.time() - start_time) * 1000)
-        
+
         outcome = ScoreOutcome.PASS if proc.returncode == 0 else ScoreOutcome.FAIL
-        
+
         return CheckResult(
             name=check.name,
             outcome=outcome,
@@ -242,9 +242,9 @@ def run_check(check: CheckCommand, cwd: str | None) -> CheckResult:
 def run_all_checks(config: ObjectiveConfig, cwd: str | None) -> dict[str, CheckResult]:
     """Run all configured checks and return results."""
     results = {}
-    
-    for check_name, check in [("build_pass", config.build), 
-                               ("test_pass", config.test), 
+
+    for check_name, check in [("build_pass", config.build),
+                               ("test_pass", config.test),
                                ("lint_clean", config.lint)]:
         if check is None:
             results[check_name] = CheckResult(
@@ -253,7 +253,7 @@ def run_all_checks(config: ObjectiveConfig, cwd: str | None) -> dict[str, CheckR
             )
         else:
             results[check_name] = run_check(check, cwd)
-    
+
     return results
 
 
@@ -278,7 +278,7 @@ def result_to_langfuse_score(
     score_name = result.name.replace(" ", "_").lower()
     if score_name not in ("build_pass", "test_pass", "lint_clean"):
         score_name = f"{score_name}_outcome"
-    
+
     metadata = {
         "outcome": result.outcome.value,
         "task3_version": "1.0.0",
@@ -293,13 +293,13 @@ def result_to_langfuse_score(
         metadata["command"] = " ".join(result.command_run)[:200]
     if workflow_run_id:
         metadata["workflow_run_id"] = workflow_run_id
-    
+
     # Include truncated output for debugging
     if result.stdout:
         metadata["stdout_preview"] = result.stdout[:500]
     if result.stderr:
         metadata["stderr_preview"] = result.stderr[:500]
-    
+
     return {
         "traceId": trace_id,
         "name": score_name,
@@ -323,9 +323,9 @@ def results_to_boolean_scores(
     for name, result in results.items():
         if result.outcome not in (ScoreOutcome.PASS, ScoreOutcome.FAIL):
             continue
-        
+
         boolean_value = 1.0 if result.outcome == ScoreOutcome.PASS else 0.0
-        
+
         metadata = {
             "outcome_detail": result.outcome.value,
             "task3_version": "1.0.0",
@@ -336,7 +336,7 @@ def results_to_boolean_scores(
             metadata["duration_ms"] = result.duration_ms
         if workflow_run_id:
             metadata["workflow_run_id"] = workflow_run_id
-        
+
         scores.append({
             "traceId": trace_id,
             "name": f"{name}_boolean",
@@ -345,7 +345,7 @@ def results_to_boolean_scores(
             "comment": f"Task3: {'PASS' if boolean_value else 'FAIL'}",
             "metadata": metadata,
         })
-    
+
     return scores
 
 
@@ -353,7 +353,7 @@ def results_to_boolean_scores(
 class ScoreState:
     """Persistent state for score deduplication."""
     scored_runs: dict[str, dict] = field(default_factory=dict)  # run_id -> {scores, timestamp}
-    
+
     @classmethod
     def load(cls, state_dir: Path) -> "ScoreState":
         """Load state from file."""
@@ -363,7 +363,7 @@ class ScoreState:
             return cls(scored_runs=data.get("scored_runs", {}))
         except (OSError, json.JSONDecodeError):
             return cls()
-    
+
     def save(self, state_dir: Path) -> None:
         """Save state to file."""
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -371,11 +371,11 @@ class ScoreState:
         # Keep only recent entries (last 100)
         recent = dict(sorted(self.scored_runs.items(), key=lambda x: x[1].get("timestamp", 0))[-100:])
         path.write_text(json.dumps({"scored_runs": recent}, indent=2))
-    
+
     def is_scored(self, workflow_run_id: str) -> bool:
         """Check if a workflow run has already been scored."""
         return workflow_run_id in self.scored_runs
-    
+
     def mark_scored(self, workflow_run_id: str, scores: list[str]) -> None:
         """Mark a workflow run as scored."""
         self.scored_runs[workflow_run_id] = {
