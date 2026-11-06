@@ -901,94 +901,26 @@ def handle_event(ev: dict) -> None:
 
 
 def _run_objective_scores_if_workflow_end(sid: str, cwd: str | None, st: dict, ev: dict) -> None:
-    """Task3: Run build/test/lint checks and record scores at workflow end.
+    """Task3: DISABLED - Do NOT run automatic objective scores on Stop hook.
     
-    Only runs if:
-    1. This is a workflow step (not a regular chat)
-    2. Objective checks are configured in .kiro/objective-checks.json
-    3. This workflow run hasn't been scored yet (dedup)
+    CRITICAL: The Kiro Stop hook fires per-turn (parent chat, each step), NOT at
+    native workflow end. Running scores here would:
+    1. Prematurely score 'analyze' before 'summarize' in two-step-demo
+    2. Score parent chat turns incorrectly
+    3. Run tests/builds multiple times per workflow
     
-    Does NOT run automatically on workspace open or for non-workflow sessions.
+    There is NO reliable automatic workflow-completion signal in the current
+    Kiro hook system. The Stop hook means "this turn ended", not "workflow done".
+    
+    SOLUTION: Objective scores must be triggered explicitly via:
+    1. Manual invocation: `python3 .kiro/hooks/run_objective_scores.py --workflow-run-id <id> --trace-id <id>`
+    2. Post-workflow script configured by user
+    3. Future Kiro WorkflowComplete hook (if/when available)
+    
+    This function is kept as documentation but does nothing.
     """
-    if not cwd:
-        return
-    
-    # Check if tracing is enabled
-    if os.environ.get("TRACE_TO_LANGFUSE", "").lower() != "true":
-        return
-    
-    # Import Task3 modules (fail-open)
-    try:
-        from objective_scores import ObjectiveConfig, run_all_checks, ScoreState
-        from langfuse_scores import submit_objective_scores
-    except ImportError as e:
-        log_err(f"Task3 import failed: {e}")
-        return
-    
-    # Get workflow info from enrichment
-    info = enrich_from_session(sid, cwd, None, st.get("turn_id"))
-    enrichment = build_enrichment(cwd, sid, info.get("session_meta") or {})
-    
-    # Only score workflow steps
-    workflow = enrichment.get("workflow") or {}
-    if not workflow.get("is_workflow_agent"):
-        return  # Not a workflow step
-    
-    # Get workflow run_id for dedup
-    run_id = workflow.get("run_id")
-    if not run_id:
-        # No native workflow ID - use step session as fallback for dedup only
-        run_id = f"step:{sid}"
-    
-    # Check dedup
-    state = ScoreState.load(STATE_DIR)
-    if state.is_scored(run_id):
-        log_err(f"Task3: workflow {run_id} already scored, skipping")
-        return
-    
-    # Load objective config
-    config = ObjectiveConfig.load(cwd)
-    if not config.has_any_configured():
-        log_err("Task3: no objective checks configured")
-        return
-    
-    # Run checks
-    log_err(f"Task3: running objective checks for workflow {run_id}")
-    results = run_all_checks(config, cwd)
-    
-    # Get trace ID for score attachment
-    trace_id = info.get("trace_id") or st.get("trace_id")
-    if not trace_id:
-        log_err("Task3: no trace_id available for scores")
-        return
-    
-    # Submit scores
-    base_url = os.environ.get("LANGFUSE_BASE_URL", DEFAULT_BASE)
-    pk = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
-    sk = os.environ.get("LANGFUSE_SECRET_KEY", "")
-    
-    if not pk or not sk:
-        log_err("Task3: missing Langfuse credentials")
-        return
-    
-    try:
-        result = submit_objective_scores(
-            results=results,
-            trace_id=trace_id,
-            workflow_run_id=run_id,
-            base_url=base_url,
-            public_key=pk,
-            secret_key=sk,
-            state_dir=STATE_DIR,
-        )
-        log_err(f"Task3: scores submitted: {result}")
-        
-        # Mark as scored
-        score_names = [name for name in results.keys()]
-        state.mark_scored(run_id, score_names)
-        state.save(STATE_DIR)
-    except Exception as e:
-        log_err(f"Task3: score submission failed: {type(e).__name__}: {e}")
+    # DISABLED: Cannot reliably detect workflow end from Stop hook
+    pass
 
 
 def main(argv: list[str]) -> None:

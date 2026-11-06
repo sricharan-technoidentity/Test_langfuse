@@ -3,11 +3,11 @@
   "hooks": [
     {
       "name": "langfuse-prompt-local",
-      "description": "Local Langfuse only (demo). Uses KIRO_LF_ENV_FILE so Cloud user-level Cloud env file is not loaded.",
+      "description": "Local Langfuse tracing with cwd-independent path resolution",
       "trigger": "UserPromptSubmit",
       "action": {
         "type": "command",
-        "command": "sh -c 'export KIRO_LF_ENV_FILE=\".kiro/langfuse.local.env\"; export KIRO_LF_STATE=\".kiro/langfuse-state-local\"; [ -f .kiro/hooks/langfuse_kiro_hook.py ] && python3 .kiro/hooks/langfuse_kiro_hook.py || true'"
+        "command": "python3 -u -c \"import sys,json,os,subprocess,tempfile; raw=sys.stdin.read(); ev=json.loads(raw); cwd=ev.get('cwd') or os.getcwd(); launcher=os.path.join(cwd,'.kiro/hooks/hook_launcher.py'); tf=tempfile.NamedTemporaryFile(mode='w',suffix='.json',delete=False); tf.write(raw); tf.close(); r=subprocess.run(['python3','-u',launcher],stdin=open(tf.name),cwd=cwd,capture_output=True,text=True,timeout=25) if os.path.isfile(launcher) else None; os.unlink(tf.name) if os.path.exists(tf.name) else None\""
       },
       "timeout": 30
     },
@@ -16,7 +16,7 @@
       "trigger": "PreToolUse",
       "action": {
         "type": "command",
-        "command": "sh -c 'export KIRO_LF_ENV_FILE=\".kiro/langfuse.local.env\"; export KIRO_LF_STATE=\".kiro/langfuse-state-local\"; [ -f .kiro/hooks/langfuse_kiro_hook.py ] && python3 .kiro/hooks/langfuse_kiro_hook.py || true'"
+        "command": "python3 -u -c \"import sys,json,os,subprocess,tempfile; raw=sys.stdin.read(); ev=json.loads(raw); cwd=ev.get('cwd') or os.getcwd(); launcher=os.path.join(cwd,'.kiro/hooks/hook_launcher.py'); tf=tempfile.NamedTemporaryFile(mode='w',suffix='.json',delete=False); tf.write(raw); tf.close(); r=subprocess.run(['python3','-u',launcher],stdin=open(tf.name),cwd=cwd,capture_output=True,text=True,timeout=25) if os.path.isfile(launcher) else None; os.unlink(tf.name) if os.path.exists(tf.name) else None\""
       },
       "timeout": 30
     },
@@ -25,7 +25,7 @@
       "trigger": "PostToolUse",
       "action": {
         "type": "command",
-        "command": "sh -c 'export KIRO_LF_ENV_FILE=\".kiro/langfuse.local.env\"; export KIRO_LF_STATE=\".kiro/langfuse-state-local\"; [ -f .kiro/hooks/langfuse_kiro_hook.py ] && python3 .kiro/hooks/langfuse_kiro_hook.py || true'"
+        "command": "python3 -u -c \"import sys,json,os,subprocess,tempfile; raw=sys.stdin.read(); ev=json.loads(raw); cwd=ev.get('cwd') or os.getcwd(); launcher=os.path.join(cwd,'.kiro/hooks/hook_launcher.py'); tf=tempfile.NamedTemporaryFile(mode='w',suffix='.json',delete=False); tf.write(raw); tf.close(); r=subprocess.run(['python3','-u',launcher],stdin=open(tf.name),cwd=cwd,capture_output=True,text=True,timeout=25) if os.path.isfile(launcher) else None; os.unlink(tf.name) if os.path.exists(tf.name) else None\""
       },
       "timeout": 30
     },
@@ -34,27 +34,27 @@
       "trigger": "Stop",
       "action": {
         "type": "command",
-        "command": "sh -c 'export KIRO_LF_ENV_FILE=\".kiro/langfuse.local.env\"; export KIRO_LF_STATE=\".kiro/langfuse-state-local\"; [ -f .kiro/hooks/langfuse_kiro_hook.py ] && python3 .kiro/hooks/langfuse_kiro_hook.py || true'"
+        "command": "python3 -u -c \"import sys,json,os,subprocess,tempfile; raw=sys.stdin.read(); ev=json.loads(raw); cwd=ev.get('cwd') or os.getcwd(); launcher=os.path.join(cwd,'.kiro/hooks/hook_launcher.py'); tf=tempfile.NamedTemporaryFile(mode='w',suffix='.json',delete=False); tf.write(raw); tf.close(); r=subprocess.run(['python3','-u',launcher],stdin=open(tf.name),cwd=cwd,capture_output=True,text=True,timeout=25) if os.path.isfile(launcher) else None; os.unlink(tf.name) if os.path.exists(tf.name) else None\""
       },
       "timeout": 30
     },
     {
       "name": "langfuse-pre-task-local",
-      "description": "Workflow step boundary (PreTaskExec) -> local Langfuse",
+      "description": "Workflow step boundary (PreTaskExec)",
       "trigger": "PreTaskExec",
       "action": {
         "type": "command",
-        "command": "sh -c 'export KIRO_LF_ENV_FILE=\".kiro/langfuse.local.env\"; export KIRO_LF_STATE=\".kiro/langfuse-state-local\"; [ -f .kiro/hooks/langfuse_kiro_hook.py ] && python3 .kiro/hooks/langfuse_kiro_hook.py || true'"
+        "command": "python3 -u -c \"import sys,json,os,subprocess,tempfile; raw=sys.stdin.read(); ev=json.loads(raw); cwd=ev.get('cwd') or os.getcwd(); launcher=os.path.join(cwd,'.kiro/hooks/hook_launcher.py'); tf=tempfile.NamedTemporaryFile(mode='w',suffix='.json',delete=False); tf.write(raw); tf.close(); r=subprocess.run(['python3','-u',launcher],stdin=open(tf.name),cwd=cwd,capture_output=True,text=True,timeout=25) if os.path.isfile(launcher) else None; os.unlink(tf.name) if os.path.exists(tf.name) else None\""
       },
       "timeout": 30
     },
     {
       "name": "langfuse-post-task-local",
-      "description": "Workflow step boundary (PostTaskExec) -> local Langfuse",
+      "description": "Workflow step boundary (PostTaskExec)",
       "trigger": "PostTaskExec",
       "action": {
         "type": "command",
-        "command": "sh -c 'export KIRO_LF_ENV_FILE=\".kiro/langfuse.local.env\"; export KIRO_LF_STATE=\".kiro/langfuse-state-local\"; [ -f .kiro/hooks/langfuse_kiro_hook.py ] && python3 .kiro/hooks/langfuse_kiro_hook.py || true'"
+        "command": "python3 -u -c \"import sys,json,os,subprocess,tempfile; raw=sys.stdin.read(); ev=json.loads(raw); cwd=ev.get('cwd') or os.getcwd(); launcher=os.path.join(cwd,'.kiro/hooks/hook_launcher.py'); tf=tempfile.NamedTemporaryFile(mode='w',suffix='.json',delete=False); tf.write(raw); tf.close(); r=subprocess.run(['python3','-u',launcher],stdin=open(tf.name),cwd=cwd,capture_output=True,text=True,timeout=25) if os.path.isfile(launcher) else None; os.unlink(tf.name) if os.path.exists(tf.name) else None\""
       },
       "timeout": 30
     }
