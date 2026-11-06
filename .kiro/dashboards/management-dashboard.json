@@ -1,0 +1,226 @@
+{
+  "$langfuseDashboard": true,
+  "version": 1,
+  "name": "Kiro Workflow Management Dashboard",
+  "description": "Adoption, reliability, and value metrics for AI SDLC workflows. Task2 implementation - tracks workflow runs (deduplicated by run_id), active engineers (excludes automation), completion rates, and adoption.",
+  "widgets": [
+    {
+      "$langfuseWidget": true,
+      "version": 1,
+      "name": "Weekly Active Engineers",
+      "description": "Distinct users running workflows (excludes automation/chomu-local)",
+      "config": {
+        "dataSource": "traces",
+        "chartType": "line",
+        "metric": "userId",
+        "aggregation": "countDistinct",
+        "breakdownDimension": null,
+        "timeDimension": "timestamp",
+        "filters": [
+          {
+            "column": "tags",
+            "operator": "contains",
+            "value": "kiro-workflow-step"
+          },
+          {
+            "column": "userId",
+            "operator": "not_equals",
+            "value": "chomu-local"
+          },
+          {
+            "column": "userId",
+            "operator": "is_not_null",
+            "value": true
+          }
+        ]
+      }
+    },
+    {
+      "$langfuseWidget": true,
+      "version": 1,
+      "name": "Workflow Runs Per Week",
+      "description": "Total workflow executions (deduplicated by workflow.run_id)",
+      "config": {
+        "dataSource": "traces",
+        "chartType": "line",
+        "metric": "metadata.workflow.run_id",
+        "aggregation": "countDistinct",
+        "breakdownDimension": null,
+        "timeDimension": "timestamp",
+        "filters": [
+          {
+            "column": "tags",
+            "operator": "contains",
+            "value": "kiro-workflow-step"
+          }
+        ]
+      }
+    },
+    {
+      "$langfuseWidget": true,
+      "version": 1,
+      "name": "Completion Rate by Status",
+      "description": "Workflow run outcomes: completed/aborted/error/running",
+      "config": {
+        "dataSource": "traces",
+        "chartType": "pie",
+        "metric": "traceId",
+        "aggregation": "count",
+        "breakdownDimension": "metadata.kiro.stop_reason",
+        "timeDimension": "timestamp",
+        "filters": [
+          {
+            "column": "tags",
+            "operator": "contains",
+            "value": "kiro-workflow-step"
+          }
+        ]
+      }
+    },
+    {
+      "$langfuseWidget": true,
+      "version": 1,
+      "name": "Adoption by Team",
+      "description": "Workflow runs grouped by team (unknown team shown separately)",
+      "config": {
+        "dataSource": "traces",
+        "chartType": "bar",
+        "metric": "metadata.workflow.run_id",
+        "aggregation": "countDistinct",
+        "breakdownDimension": "metadata.team",
+        "timeDimension": "timestamp",
+        "filters": [
+          {
+            "column": "tags",
+            "operator": "contains",
+            "value": "kiro-workflow-step"
+          }
+        ]
+      }
+    },
+    {
+      "$langfuseWidget": true,
+      "version": 1,
+      "name": "Adoption by Repository",
+      "description": "Workflow runs grouped by repository",
+      "config": {
+        "dataSource": "traces",
+        "chartType": "bar",
+        "metric": "metadata.workflow.run_id",
+        "aggregation": "countDistinct",
+        "breakdownDimension": "metadata.repo",
+        "timeDimension": "timestamp",
+        "filters": [
+          {
+            "column": "tags",
+            "operator": "contains",
+            "value": "kiro-workflow-step"
+          }
+        ]
+      }
+    },
+    {
+      "$langfuseWidget": true,
+      "version": 1,
+      "name": "Top Workflows by Usage",
+      "description": "Most frequently run workflows",
+      "config": {
+        "dataSource": "traces",
+        "chartType": "bar",
+        "metric": "metadata.workflow.run_id",
+        "aggregation": "countDistinct",
+        "breakdownDimension": "metadata.workflow.name",
+        "timeDimension": "timestamp",
+        "filters": [
+          {
+            "column": "tags",
+            "operator": "contains",
+            "value": "kiro-workflow-step"
+          },
+          {
+            "column": "metadata.workflow.name",
+            "operator": "is_not_null",
+            "value": true
+          }
+        ]
+      }
+    },
+    {
+      "$langfuseWidget": true,
+      "version": 1,
+      "name": "Average Duration by Workflow",
+      "description": "Average workflow execution time (ms) - NOTE: based on elapsed_ms metadata, may be incomplete",
+      "config": {
+        "dataSource": "traces",
+        "chartType": "bar",
+        "metric": "metadata.kiro.elapsed_ms",
+        "aggregation": "avg",
+        "breakdownDimension": "metadata.workflow.name",
+        "timeDimension": "timestamp",
+        "filters": [
+          {
+            "column": "tags",
+            "operator": "contains",
+            "value": "kiro-workflow-step"
+          },
+          {
+            "column": "metadata.kiro.elapsed_ms",
+            "operator": "is_not_null",
+            "value": true
+          }
+        ]
+      }
+    }
+  ],
+  "layout": [
+    {
+      "widgetIndex": 0,
+      "x": 0,
+      "y": 0,
+      "width": 12,
+      "height": 4
+    },
+    {
+      "widgetIndex": 1,
+      "x": 0,
+      "y": 4,
+      "width": 12,
+      "height": 4
+    },
+    {
+      "widgetIndex": 2,
+      "x": 0,
+      "y": 8,
+      "width": 12,
+      "height": 4
+    },
+    {
+      "widgetIndex": 3,
+      "x": 0,
+      "y": 12,
+      "width": 12,
+      "height": 4
+    },
+    {
+      "widgetIndex": 4,
+      "x": 0,
+      "y": 16,
+      "width": 12,
+      "height": 4
+    },
+    {
+      "widgetIndex": 5,
+      "x": 0,
+      "y": 20,
+      "width": 12,
+      "height": 4
+    },
+    {
+      "widgetIndex": 6,
+      "x": 0,
+      "y": 24,
+      "width": 12,
+      "height": 4
+    }
+  ]
+}

@@ -1,0 +1,223 @@
+{
+  "$langfuseDashboard": true,
+  "version": 1,
+  "name": "Kiro Workflow Engineering Dashboard",
+  "description": "Quality, reliability, and debugging metrics for AI SDLC workflows. Task2 implementation - tracks completion by version, tool errors, latency (shows unavailable when no genuine timing), and failed traces.",
+  "widgets": [
+    {
+      "$langfuseWidget": true,
+      "version": 1,
+      "name": "Completion by Workflow Version",
+      "description": "Success rate per workflow name and version - detects regressions",
+      "config": {
+        "dataSource": "traces",
+        "chartType": "table",
+        "metric": "traceId",
+        "aggregation": "count",
+        "breakdownDimension": "metadata.workflow.name,metadata.workflow.version",
+        "timeDimension": "timestamp",
+        "filters": [
+          {
+            "column": "tags",
+            "operator": "contains",
+            "value": "kiro-workflow-step"
+          }
+        ]
+      }
+    },
+    {
+      "$langfuseWidget": true,
+      "version": 1,
+      "name": "Tool Error Rate by Tool",
+      "description": "Percentage of tool calls that failed, grouped by tool name",
+      "config": {
+        "dataSource": "observations",
+        "chartType": "bar",
+        "metric": "observationId",
+        "aggregation": "count",
+        "breakdownDimension": "name",
+        "timeDimension": "timestamp",
+        "filters": [
+          {
+            "column": "type",
+            "operator": "equals",
+            "value": "tool"
+          },
+          {
+            "column": "statusCode",
+            "operator": "not_equals",
+            "value": 200
+          }
+        ]
+      }
+    },
+    {
+      "$langfuseWidget": true,
+      "version": 1,
+      "name": "Tool Latency p50",
+      "description": "Median tool call duration - NOTE: Shows 0 when tool start==end (no genuine timing data)",
+      "config": {
+        "dataSource": "observations",
+        "chartType": "line",
+        "metric": "latency",
+        "aggregation": "p50",
+        "breakdownDimension": "name",
+        "timeDimension": "timestamp",
+        "filters": [
+          {
+            "column": "type",
+            "operator": "equals",
+            "value": "tool"
+          }
+        ]
+      }
+    },
+    {
+      "$langfuseWidget": true,
+      "version": 1,
+      "name": "Tool Latency p95",
+      "description": "95th percentile tool call duration - NOTE: Shows 0 when tool start==end (no genuine timing data)",
+      "config": {
+        "dataSource": "observations",
+        "chartType": "line",
+        "metric": "latency",
+        "aggregation": "p95",
+        "breakdownDimension": "name",
+        "timeDimension": "timestamp",
+        "filters": [
+          {
+            "column": "type",
+            "operator": "equals",
+            "value": "tool"
+          }
+        ]
+      }
+    },
+    {
+      "$langfuseWidget": true,
+      "version": 1,
+      "name": "Tool Calls Per Workflow Run",
+      "description": "Average number of tool invocations per workflow execution",
+      "config": {
+        "dataSource": "traces",
+        "chartType": "line",
+        "metric": "metadata.tool_calls",
+        "aggregation": "avg",
+        "breakdownDimension": "metadata.workflow.name",
+        "timeDimension": "timestamp",
+        "filters": [
+          {
+            "column": "tags",
+            "operator": "contains",
+            "value": "kiro-workflow-step"
+          }
+        ]
+      }
+    },
+    {
+      "$langfuseWidget": true,
+      "version": 1,
+      "name": "Failed Traces (Error/Aborted)",
+      "description": "Traces with error or aborted stop_reason for drill-down debugging",
+      "config": {
+        "dataSource": "traces",
+        "chartType": "table",
+        "metric": "traceId",
+        "aggregation": "count",
+        "breakdownDimension": "metadata.kiro.stop_reason",
+        "timeDimension": "timestamp",
+        "filters": [
+          {
+            "column": "tags",
+            "operator": "contains",
+            "value": "kiro-workflow-step"
+          },
+          {
+            "column": "metadata.kiro.stop_reason",
+            "operator": "in",
+            "value": [
+              "error",
+              "aborted"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "$langfuseWidget": true,
+      "version": 1,
+      "name": "Objective Check Pass Rate",
+      "description": "Build/test/lint pass rates from Task3 objective scores",
+      "config": {
+        "dataSource": "scores",
+        "chartType": "bar",
+        "metric": "scoreId",
+        "aggregation": "count",
+        "breakdownDimension": "name,value",
+        "timeDimension": "timestamp",
+        "filters": [
+          {
+            "column": "name",
+            "operator": "in",
+            "value": [
+              "build_pass",
+              "test_pass",
+              "lint_clean"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "layout": [
+    {
+      "widgetIndex": 0,
+      "x": 0,
+      "y": 0,
+      "width": 12,
+      "height": 4
+    },
+    {
+      "widgetIndex": 1,
+      "x": 0,
+      "y": 4,
+      "width": 12,
+      "height": 4
+    },
+    {
+      "widgetIndex": 2,
+      "x": 0,
+      "y": 8,
+      "width": 12,
+      "height": 4
+    },
+    {
+      "widgetIndex": 3,
+      "x": 0,
+      "y": 12,
+      "width": 12,
+      "height": 4
+    },
+    {
+      "widgetIndex": 4,
+      "x": 0,
+      "y": 16,
+      "width": 12,
+      "height": 4
+    },
+    {
+      "widgetIndex": 5,
+      "x": 0,
+      "y": 20,
+      "width": 12,
+      "height": 4
+    },
+    {
+      "widgetIndex": 6,
+      "x": 0,
+      "y": 24,
+      "width": 12,
+      "height": 4
+    }
+  ]
+}

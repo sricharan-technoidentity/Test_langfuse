@@ -67,3 +67,11 @@ nosetests.xml
 
 # Uploads folder (if present from cloud agent)
 uploads/
+
+# Task3 score state
+.kiro/langfuse-state-local/objective_scores_state.json
+.kiro/langfuse-state-local/submitted_scores.json
+.kiro/langfuse-state-local/pending_scores.jsonl
+
+# Objective checks config (user-specific)
+.kiro/objective-checks.json
