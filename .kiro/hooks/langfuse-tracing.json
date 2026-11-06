@@ -1,0 +1,62 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "langfuse-prompt-local",
+      "description": "Local Langfuse only (demo). Uses KIRO_LF_ENV_FILE so Cloud user-level Cloud env file is not loaded.",
+      "trigger": "UserPromptSubmit",
+      "action": {
+        "type": "command",
+        "command": "sh -c 'export KIRO_LF_ENV_FILE=\".kiro/langfuse.local.env\"; export KIRO_LF_STATE=\".kiro/langfuse-state-local\"; [ -f .kiro/hooks/langfuse_kiro_hook.py ] && python3 .kiro/hooks/langfuse_kiro_hook.py || true'"
+      },
+      "timeout": 30
+    },
+    {
+      "name": "langfuse-pre-tool-local",
+      "trigger": "PreToolUse",
+      "action": {
+        "type": "command",
+        "command": "sh -c 'export KIRO_LF_ENV_FILE=\".kiro/langfuse.local.env\"; export KIRO_LF_STATE=\".kiro/langfuse-state-local\"; [ -f .kiro/hooks/langfuse_kiro_hook.py ] && python3 .kiro/hooks/langfuse_kiro_hook.py || true'"
+      },
+      "timeout": 30
+    },
+    {
+      "name": "langfuse-post-tool-local",
+      "trigger": "PostToolUse",
+      "action": {
+        "type": "command",
+        "command": "sh -c 'export KIRO_LF_ENV_FILE=\".kiro/langfuse.local.env\"; export KIRO_LF_STATE=\".kiro/langfuse-state-local\"; [ -f .kiro/hooks/langfuse_kiro_hook.py ] && python3 .kiro/hooks/langfuse_kiro_hook.py || true'"
+      },
+      "timeout": 30
+    },
+    {
+      "name": "langfuse-stop-local",
+      "trigger": "Stop",
+      "action": {
+        "type": "command",
+        "command": "sh -c 'export KIRO_LF_ENV_FILE=\".kiro/langfuse.local.env\"; export KIRO_LF_STATE=\".kiro/langfuse-state-local\"; [ -f .kiro/hooks/langfuse_kiro_hook.py ] && python3 .kiro/hooks/langfuse_kiro_hook.py || true'"
+      },
+      "timeout": 30
+    },
+    {
+      "name": "langfuse-pre-task-local",
+      "description": "Workflow step boundary (PreTaskExec) -> local Langfuse",
+      "trigger": "PreTaskExec",
+      "action": {
+        "type": "command",
+        "command": "sh -c 'export KIRO_LF_ENV_FILE=\".kiro/langfuse.local.env\"; export KIRO_LF_STATE=\".kiro/langfuse-state-local\"; [ -f .kiro/hooks/langfuse_kiro_hook.py ] && python3 .kiro/hooks/langfuse_kiro_hook.py || true'"
+      },
+      "timeout": 30
+    },
+    {
+      "name": "langfuse-post-task-local",
+      "description": "Workflow step boundary (PostTaskExec) -> local Langfuse",
+      "trigger": "PostTaskExec",
+      "action": {
+        "type": "command",
+        "command": "sh -c 'export KIRO_LF_ENV_FILE=\".kiro/langfuse.local.env\"; export KIRO_LF_STATE=\".kiro/langfuse-state-local\"; [ -f .kiro/hooks/langfuse_kiro_hook.py ] && python3 .kiro/hooks/langfuse_kiro_hook.py || true'"
+      },
+      "timeout": 30
+    }
+  ]
+}

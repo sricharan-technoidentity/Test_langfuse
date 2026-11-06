@@ -1,0 +1,18 @@
+{
+  "name": "sample-file-review",
+  "description": "Inspect a sample file and write a short read-only review for local Langfuse tracing demo",
+  "inputs": {
+    "target_file": "file"
+  },
+  "steps": [
+    {
+      "type": "step",
+      "id": "inspect",
+      "agent": "wf-planner",
+      "prompt": "You are running the sample-file-review workflow in an isolated demo workspace.\n\nTask: inspect {{target_file}} only. Do not edit, create, or delete any project source files except writing the review artifact path below.\n\nWrite a short review (4-6 bullets) covering: purpose, clarity, one risk or edge case, and one improvement idea. Save it to .kiro/workflow-output/sample-review.md.\n\nFinish by calling send_message with severity success and a one-line summary.",
+      "artifacts": {
+        "review": ".kiro/workflow-output/sample-review.md"
+      }
+    }
+  ]
+}

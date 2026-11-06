@@ -1,0 +1,8 @@
+{
+  "user_id": "chomu-local",
+  "team": null,
+  "workspace_key": "kiro-local-workflow-demo",
+  "repo": null,
+  "git_sha": null,
+  "notes": "Local-first Task1 config. user_id is an explicit automation identity. team/repo/git_sha unset until confirmed. Never infer from OS/email."
+}
