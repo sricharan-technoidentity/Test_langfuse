@@ -97,9 +97,48 @@ def main() -> int:
         log_diagnostic(state_dir, f"ERROR: hook script not found: {hook_script}")
         return 0  # fail-open
     
-    # Check if env file exists (warning only)
-    if not Path(env_file).exists():
-        log_diagnostic(state_dir, f"WARNING: env file not found: {env_file} (may use fallback)")
+    # Load env file and check tracing status BEFORE calling hook
+    env_loaded = False
+    if Path(env_file).exists():
+        try:
+            for line in Path(env_file).read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                os.environ[k.strip()] = v.strip().strip("'\"")
+            env_loaded = True
+        except Exception as e:
+            log_diagnostic(state_dir, f"WARNING: failed to load env file: {e}")
+    else:
+        log_diagnostic(state_dir, f"WARNING: env file not found: {env_file}")
+    
+    # Log tracing configuration status
+    trace_enabled = os.environ.get("TRACE_TO_LANGFUSE", "").lower() == "true"
+    has_public_key = bool(os.environ.get("LANGFUSE_PUBLIC_KEY"))
+    has_secret_key = bool(os.environ.get("LANGFUSE_SECRET_KEY"))
+    base_url = os.environ.get("LANGFUSE_BASE_URL", "not-set")
+    
+    log_diagnostic(
+        state_dir,
+        f"CONFIG env_loaded={env_loaded} TRACE_TO_LANGFUSE={trace_enabled} "
+        f"has_keys={has_public_key and has_secret_key} base_url={base_url}"
+    )
+    
+    if not trace_enabled:
+        log_diagnostic(
+            state_dir,
+            f"SKIPPED: TRACE_TO_LANGFUSE is not 'true' - tracing disabled. "
+            f"Set TRACE_TO_LANGFUSE=true in {env_file}"
+        )
+        return 0  # Not an error, just disabled
+    
+    if not has_public_key or not has_secret_key:
+        log_diagnostic(
+            state_dir,
+            f"SKIPPED: Missing LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY in {env_file}"
+        )
+        return 0
     
     # Import and execute the hook
     try:

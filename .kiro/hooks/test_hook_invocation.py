@@ -196,14 +196,35 @@ def main():
         else:
             print("✗ Hook launcher did not create diagnostic log - invocation failed")
         
-        # Check if traces were sent
+        # Check tracing configuration
         if env_file.exists():
-            from dotenv import dotenv_values
-            env = dotenv_values(env_file)
-            if env.get("TRACE_TO_LANGFUSE", "").lower() == "true":
-                print("  TRACE_TO_LANGFUSE=true - traces should be sent if credentials valid")
+            env_content = env_file.read_text()
+            env = {}
+            for line in env_content.splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    env[k.strip()] = v.strip().strip("'\"")
+            
+            trace_enabled = env.get("TRACE_TO_LANGFUSE", "").lower() == "true"
+            has_public = bool(env.get("LANGFUSE_PUBLIC_KEY"))
+            has_secret = bool(env.get("LANGFUSE_SECRET_KEY"))
+            base_url = env.get("LANGFUSE_BASE_URL", "not configured")
+            
+            print(f"  TRACE_TO_LANGFUSE={trace_enabled}")
+            print(f"  Has credentials: public_key={has_public}, secret_key={has_secret}")
+            print(f"  Base URL: {base_url}")
+            
+            if not trace_enabled:
+                print("  ⚠ Tracing DISABLED - set TRACE_TO_LANGFUSE=true to enable")
+            elif not has_public or not has_secret:
+                print("  ⚠ Missing credentials - traces will not be sent")
             else:
-                print("  TRACE_TO_LANGFUSE not set to true - no traces sent")
+                print("  ✓ Tracing enabled and configured")
+        else:
+            print(f"  ⚠ No env file at {env_file}")
+            print(f"    Copy .kiro/langfuse.local.env.template to .kiro/langfuse.local.env")
+            print(f"    and configure your Langfuse credentials")
         
         return result.returncode
         

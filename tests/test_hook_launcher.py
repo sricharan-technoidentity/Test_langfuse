@@ -34,9 +34,9 @@ def handle_event(ev):
     pass
 ''')
         
-        # Create env file
+        # Create env file with tracing ENABLED (required for hook to run)
         env_file = kiro_dir / "langfuse.local.env"
-        env_file.write_text("TRACE_TO_LANGFUSE=false\n")
+        env_file.write_text("TRACE_TO_LANGFUSE=true\nLANGFUSE_PUBLIC_KEY=pk-test\nLANGFUSE_SECRET_KEY=sk-test\n")
         
         # Build test event
         event = {
@@ -102,9 +102,9 @@ def handle_event(ev):
     marker.write_text(os.environ.get("KIRO_LF_ENV_FILE", "not-set"))
 ''')
         
-        # Create env file in workspace
+        # Create env file in workspace WITH tracing enabled
         env_file = kiro_dir / "langfuse.local.env"
-        env_file.write_text("TRACE_TO_LANGFUSE=false\n")
+        env_file.write_text("TRACE_TO_LANGFUSE=true\nLANGFUSE_PUBLIC_KEY=pk-test\nLANGFUSE_SECRET_KEY=sk-test\n")
         
         event = {
             "hook_event_name": "UserPromptSubmit",
@@ -179,6 +179,104 @@ def handle_event(ev):
             if launcher_log.exists():
                 log_content = launcher_log.read_text()
                 assert "hook script not found" in log_content or "hook_exists=False" in log_content
+        finally:
+            os.unlink(tf_path)
+
+
+class TestHookLauncherTracingConfig:
+    """Test launcher behavior with different tracing configurations."""
+
+    def test_launcher_skips_when_tracing_disabled(self, tmp_path: Path):
+        """Launcher should log SKIPPED when TRACE_TO_LANGFUSE is not true."""
+        kiro_dir = tmp_path / ".kiro"
+        hooks_dir = kiro_dir / "hooks"
+        hooks_dir.mkdir(parents=True)
+        
+        launcher_src = Path(__file__).parent.parent / ".kiro" / "hooks" / "hook_launcher.py"
+        launcher_dst = hooks_dir / "hook_launcher.py"
+        launcher_dst.write_text(launcher_src.read_text())
+        
+        # Create dummy hook (launcher checks config BEFORE calling hook)
+        hook_dst = hooks_dir / "langfuse_kiro_hook.py"
+        hook_dst.write_text('def handle_event(ev): pass\n')
+        
+        # Env file with tracing DISABLED
+        env_file = kiro_dir / "langfuse.local.env"
+        env_file.write_text("TRACE_TO_LANGFUSE=false\n")
+        
+        event = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "test-disabled",
+            "cwd": str(tmp_path),
+        }
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tf:
+            json.dump(event, tf)
+            tf_path = tf.name
+        
+        try:
+            result = subprocess.run(
+                [sys.executable, "-u", str(launcher_dst)],
+                stdin=open(tf_path),
+                cwd="/tmp",
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            
+            assert result.returncode == 0
+            
+            launcher_log = kiro_dir / "langfuse-state-local" / "launcher.log"
+            assert launcher_log.exists()
+            log_content = launcher_log.read_text()
+            assert "SKIPPED" in log_content
+            assert "TRACE_TO_LANGFUSE" in log_content
+        finally:
+            os.unlink(tf_path)
+
+    def test_launcher_skips_when_no_env_file(self, tmp_path: Path):
+        """Launcher should log SKIPPED when env file is missing."""
+        kiro_dir = tmp_path / ".kiro"
+        hooks_dir = kiro_dir / "hooks"
+        hooks_dir.mkdir(parents=True)
+        
+        launcher_src = Path(__file__).parent.parent / ".kiro" / "hooks" / "hook_launcher.py"
+        launcher_dst = hooks_dir / "hook_launcher.py"
+        launcher_dst.write_text(launcher_src.read_text())
+        
+        # Create dummy hook
+        hook_dst = hooks_dir / "langfuse_kiro_hook.py"
+        hook_dst.write_text('def handle_event(ev): pass\n')
+        
+        # NO env file created (tracing will be disabled)
+        
+        event = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "test-no-env",
+            "cwd": str(tmp_path),
+        }
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tf:
+            json.dump(event, tf)
+            tf_path = tf.name
+        
+        try:
+            result = subprocess.run(
+                [sys.executable, "-u", str(launcher_dst)],
+                stdin=open(tf_path),
+                cwd="/tmp",
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            
+            assert result.returncode == 0
+            
+            launcher_log = kiro_dir / "langfuse-state-local" / "launcher.log"
+            assert launcher_log.exists()
+            log_content = launcher_log.read_text()
+            # Should skip due to missing env/tracing disabled
+            assert "SKIPPED" in log_content or "WARNING" in log_content
         finally:
             os.unlink(tf_path)
 

@@ -1,15 +1,32 @@
-"""Task2: Langfuse dashboard configuration and provisioning.
+"""Task2: Langfuse dashboard configuration definitions.
 
-This module provides:
-1. Dashboard widget definitions for management and engineering dashboards
-2. JSON configuration export for dashboards-as-code
-3. Programmatic dashboard creation via Langfuse unstable API (when available)
+STATUS: REFERENCE ONLY - NOT READY FOR API PROVISIONING
 
-IMPORTANT: Langfuse v4.76.0 dashboard API status:
-- Unstable endpoints at /api/public/unstable/dashboards, /dashboard-widgets, /placements
-- These endpoints may change without notice
-- Self-hosted v4.76.0 MUST be verified for availability
-- If API unavailable, use JSON export + manual UI import
+This module provides dashboard metric DEFINITIONS that describe what should be
+measured. These are NOT in the correct Langfuse API schema and CANNOT be used
+to provision dashboards via the unstable API directly.
+
+LANGFUSE v4.76.0 DASHBOARD API FACTS (from docs):
+1. Unstable endpoints: /api/public/unstable/dashboard-widgets, /dashboards
+2. Supported views: observations, scores-numeric, scores-boolean, scores-categorical
+3. The "traces" view is LEGACY and NOT supported for new widgets
+4. Metrics use: {"measure": "field", "agg": "sum|count|avg|uniq|..."}
+5. Dimensions use: {"field": "fieldname"}
+6. Aggregation "uniq" (not "countDistinct") for distinct counts
+
+WHAT THIS MODULE PROVIDES:
+- Metric definitions describing WHAT to measure (conceptual)
+- JSON export for human reference (not API-compatible)
+- Documentation of dashboard design principles
+
+WHAT THIS MODULE DOES NOT PROVIDE:
+- API-compatible widget payloads (schema mismatch)
+- Working provision_dashboards() (would fail with current schema)
+- traces-view widgets (not supported in Langfuse v4)
+
+TO ACTUALLY CREATE DASHBOARDS:
+Use `npx langfuse-cli api unstable-dashboard-widgets create --help` to see
+the correct schema, then create widgets manually via CLI or UI.
 
 Dashboard design principles:
 - Workflow run aggregation uses workflow.run_id for dedup across steps
@@ -437,14 +454,28 @@ def export_widgets_json(output_dir: Path) -> dict[str, Path]:
 
 
 # =============================================================================
-# API CLIENT (Unstable)
+# API CLIENT (Unstable) - REFERENCE ONLY, SCHEMA MISMATCH
 # =============================================================================
 
 class LangfuseDashboardClient:
     """Client for Langfuse dashboard API (unstable).
     
-    WARNING: The /api/public/unstable endpoints may change without notice.
-    This client is designed for Langfuse v4.76.0 but may not work on all versions.
+    WARNING: THIS CLIENT CANNOT PROVISION WIDGETS IN CURRENT FORM.
+    
+    The widget schema in this module (dataSource, metric, aggregation, etc.)
+    does NOT match the actual Langfuse API schema (view, metrics[], dimensions[]).
+    
+    The actual API schema (from langfuse-cli api unstable-dashboard-widgets create --help):
+    {
+      "name": "string",
+      "view": "observations",  // NOT "traces"!
+      "chartType": "LINE_TIME_SERIES",
+      "dimensions": [{"field": "string"}],
+      "metrics": [{"measure": "string", "agg": "sum|count|avg|uniq"}],
+      "filters": [{"column": "string", "operator": "string", "value": ...}]
+    }
+    
+    Use npx langfuse-cli directly for actual provisioning.
     """
     
     def __init__(self, base_url: str, public_key: str, secret_key: str):
@@ -499,12 +530,21 @@ class LangfuseDashboardClient:
         return self._request("POST", "/api/public/unstable/dashboards", payload)
     
     def create_widget(self, widget: WidgetDefinition) -> dict:
-        """Create a new widget."""
-        payload = widget.to_json()
-        # Remove envelope for API call
-        del payload["$langfuseWidget"]
-        del payload["version"]
-        return self._request("POST", "/api/public/unstable/dashboard-widgets", payload)
+        """Create a new widget.
+        
+        WARNING: This method will FAIL because WidgetDefinition.to_json()
+        produces a schema that does not match the actual Langfuse API.
+        
+        The API requires: view, chartType, dimensions[], metrics[], filters[]
+        Our schema has: dataSource, chartType, metric, aggregation, breakdownDimension
+        
+        Use npx langfuse-cli api unstable-dashboard-widgets create directly.
+        """
+        raise NotImplementedError(
+            "Widget provisioning disabled: schema mismatch. "
+            "Use npx langfuse-cli api unstable-dashboard-widgets create directly. "
+            "See dashboard_config.py docstring for correct API schema."
+        )
     
     def add_placement(self, dashboard_id: str, widget_id: str, x: int, y: int, width: int, height: int) -> dict:
         """Add a widget placement to a dashboard."""
@@ -524,72 +564,43 @@ def provision_dashboards(
 ) -> dict:
     """Provision management and engineering dashboards via API.
     
-    Args:
-        base_url: Langfuse server URL
-        public_key: Langfuse public API key
-        secret_key: Langfuse secret API key
-        dry_run: If True, only check availability without creating
+    STATUS: DISABLED - SCHEMA MISMATCH
     
-    Returns:
-        Dict with status, dashboards created, and any errors.
+    This function cannot provision dashboards because the widget schema in
+    this module does not match the actual Langfuse API schema.
+    
+    TO PROVISION DASHBOARDS:
+    1. Use npx langfuse-cli api unstable-dashboard-widgets create --help
+       to see the correct schema
+    2. Create widgets via CLI with correct schema
+    3. Create dashboard and add placements
+    
+    Example CLI commands:
+        # List existing dashboards
+        npx langfuse-cli api unstable-dashboards list --json
+        
+        # Create a dashboard
+        npx langfuse-cli api unstable-dashboards create \\
+          --body-json '{"name":"My Dashboard","description":"..."}'
+        
+        # Create a widget (correct schema!)
+        npx langfuse-cli api unstable-dashboard-widgets create \\
+          --body-json '{
+            "name": "Widget Name",
+            "view": "observations",
+            "chartType": "LINE_TIME_SERIES",
+            "dimensions": [{"field": "name"}],
+            "metrics": [{"measure": "observationId", "agg": "count"}],
+            "filters": []
+          }'
     """
-    client = LangfuseDashboardClient(base_url, public_key, secret_key)
-    
-    available, message = client.check_api_available()
-    if not available:
-        return {
-            "success": False,
-            "api_available": False,
-            "message": message,
-            "recommendation": "Export dashboard JSON configs and import manually via Langfuse UI",
-        }
-    
-    if dry_run:
-        return {
-            "success": True,
-            "api_available": True,
-            "message": "Dashboard API available - ready to provision",
-            "dry_run": True,
-        }
-    
-    results = {"success": True, "api_available": True, "dashboards": [], "errors": []}
-    
-    for dashboard_def in [get_management_dashboard(), get_engineering_dashboard()]:
-        try:
-            # Create dashboard
-            dashboard = client.create_dashboard(dashboard_def)
-            dashboard_id = dashboard.get("id")
-            
-            # Create widgets and add placements
-            widget_ids = []
-            for i, widget_def in enumerate(dashboard_def.widgets):
-                widget = client.create_widget(widget_def)
-                widget_id = widget.get("id")
-                widget_ids.append(widget_id)
-                
-                # Add placement (grid layout)
-                client.add_placement(
-                    dashboard_id=dashboard_id,
-                    widget_id=widget_id,
-                    x=0,
-                    y=i * 4,
-                    width=12,
-                    height=4,
-                )
-            
-            results["dashboards"].append({
-                "name": dashboard_def.name,
-                "id": dashboard_id,
-                "widgets": len(widget_ids),
-            })
-        except Exception as e:
-            results["errors"].append({
-                "dashboard": dashboard_def.name,
-                "error": str(e),
-            })
-            results["success"] = False
-    
-    return results
+    return {
+        "success": False,
+        "api_available": None,
+        "message": "Dashboard provisioning disabled: schema mismatch between this module and Langfuse API",
+        "recommendation": "Use npx langfuse-cli api unstable-dashboard-widgets create directly",
+        "docs": "npx langfuse-cli api unstable-dashboard-widgets create --help",
+    }
 
 
 # =============================================================================

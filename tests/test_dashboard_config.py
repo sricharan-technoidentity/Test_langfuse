@@ -292,10 +292,8 @@ class TestLangfuseDashboardClient(unittest.TestCase):
 class TestProvisionDashboards(unittest.TestCase):
     """Test dashboard provisioning."""
     
-    @patch.object(LangfuseDashboardClient, "check_api_available")
-    def test_dry_run_success(self, mock_check):
-        mock_check.return_value = (True, "API available")
-        
+    def test_provisioning_disabled(self):
+        """provision_dashboards now returns disabled status due to schema mismatch."""
         result = provision_dashboards(
             base_url="http://localhost:3000",
             public_key="pk-lf-test",
@@ -303,24 +301,23 @@ class TestProvisionDashboards(unittest.TestCase):
             dry_run=True,
         )
         
-        self.assertTrue(result["success"])
-        self.assertTrue(result["api_available"])
-        self.assertTrue(result["dry_run"])
+        # Provisioning is now disabled - schema mismatch documented
+        self.assertFalse(result["success"])
+        self.assertIn("schema mismatch", result["message"])
+        self.assertIn("langfuse-cli", result["recommendation"])
     
-    @patch.object(LangfuseDashboardClient, "check_api_available")
-    def test_api_unavailable(self, mock_check):
-        mock_check.return_value = (False, "Not found")
-        
+    def test_schema_mismatch_documented(self):
+        """Verify provisioning includes schema mismatch documentation."""
         result = provision_dashboards(
             base_url="http://localhost:3000",
             public_key="pk-lf-test",
             secret_key="sk-lf-test",
-            dry_run=True,
+            dry_run=False,  # Even without dry_run, should fail
         )
         
         self.assertFalse(result["success"])
-        self.assertFalse(result["api_available"])
-        self.assertIn("recommendation", result)
+        self.assertIn("docs", result)
+        self.assertIn("langfuse-cli", result["docs"])
 
 
 class TestWorkflowRunDeduplication(unittest.TestCase):
