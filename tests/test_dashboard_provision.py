@@ -20,6 +20,12 @@ from dashboard_provision import (
     provision_dashboard,
     validate_widget_spec,
     extract_placed_widget_ids,
+    extract_placement_ids,
+    collect_placements_from_dashboard,
+    plan_failed_acceptance_cleanup,
+    PlacementParseError,
+    CleanupSafetyError,
+    load_cleanup_plan,
 )
 
 
@@ -333,15 +339,135 @@ class TestPivotMultiDimension:
 
 
 class TestPlacementIdempotency:
-    def test_extract_ids_from_nested_widget_object(self):
+    def test_extract_uses_documented_widgetId_only(self):
+        """POST/GET documented field is widgetId. Placement id is the tile UUID."""
         ids = extract_placed_widget_ids([
-            {"widgetId": "a"},
-            {"widget": {"id": "b"}},
-            {"widget_id": "c"},
+            {"type": "widget", "id": "placement-uuid-1", "widgetId": "a", "x": 0, "y": 0, "width": 6, "height": 6},
+            {"widgetId": "c"},
         ])
-        assert ids == {"a", "b", "c"}
+        assert ids == {"a", "c"}
+        assert "placement-uuid-1" not in ids
+
+    def test_does_not_guess_nested_widget_id(self):
+        """9d5390b guessed widget.id. That is not the public GET shape."""
+        ids = extract_placed_widget_ids([
+            {"id": "f382efd6-9be7-4ddc-b051-2331c68b6a6e", "widget": {"id": "cmw60edn9001bps301ticm3xk"}},
+        ])
+        assert ids == set()
+
+    def test_integer_placements_count_is_parse_error(self):
+        """LIST endpoint placements is a count (evidence: 6, 12, 18, 13, 19, 25)."""
+        try:
+            extract_placed_widget_ids(18)
+            raise AssertionError("expected PlacementParseError")
+        except PlacementParseError as e:
+            assert "integer" in str(e).lower() or "count" in str(e).lower()
 
     def test_second_apply_does_not_repost_existing_placement(self):
+        spec = DashboardSpec(
+            name="Test",
+            description="",
+            widgets=[WidgetSpec(
+                name="W1", description="", view="observations",
+                chart_type="NUMBER", dimensions=[], metrics=[{"measure": "count", "agg": "sum"}]
+            )],
+        )
+        client = LangfuseClient("http://localhost:3000", "pk-test", "sk-test")
+        documented_get_widgets = [{
+            "type": "widget",
+            "id": "f382efd6-9be7-4ddc-b051-2331c68b6a6e",
+            "widgetId": "w1",
+            "x": 0, "y": 0, "width": 6, "height": 6,
+        }]
+        with mock.patch.object(client, "find_dashboard_by_name", return_value={"id": "d1", "name": "Test"}):
+            with mock.patch.object(client, "find_widget_by_name", return_value={"id": "w1", "name": "W1"}):
+                with mock.patch.object(client, "update_widget", return_value={"id": "w1"}):
+                    with mock.patch.object(
+                        client, "get_dashboard_placements",
+                        return_value=documented_get_widgets,
+                    ):
+                        with mock.patch.object(client, "add_placement") as add_pl:
+                            result = provision_dashboard(client, spec, dry_run=False)
+        add_pl.assert_not_called()
+        assert result["placements"] == []
+        assert result["placements_skipped"] == 1
+
+
+class TestDocumentedDashboardGetShape:
+    """Evidence-backed GET /unstable/dashboards/{id} vs LIST count field."""
+
+    DOCUMENTED_GET = {
+        "id": "cmw56dxbi0005ps30fvhgrcjg",
+        "name": "Kiro Management Dashboard",
+        "createdAt": "2019-08-24T14:15:22Z",
+        "updatedAt": "2019-08-24T14:15:22Z",
+        "description": "string",
+        "definition": {
+            "widgets": [
+                {
+                    "type": "widget",
+                    "id": "f382efd6-9be7-4ddc-b051-2331c68b6a6e",
+                    "widgetId": "cmw60edn9001bps301ticm3xk",
+                    "x": 0, "y": 0, "width": 6, "height": 6,
+                }
+            ]
+        },
+    }
+
+    LIST_SUMMARY = {
+        "id": "cmw56dxbi0005ps30fvhgrcjg",
+        "name": "Kiro Management Dashboard",
+        "placements": 18,
+    }
+
+    def test_collects_definition_widgets_widgetId(self):
+        placements, source = collect_placements_from_dashboard(self.DOCUMENTED_GET)
+        assert source == "definition.widgets"
+        assert extract_placed_widget_ids(placements) == {"cmw60edn9001bps301ticm3xk"}
+        assert extract_placement_ids(placements) == {"f382efd6-9be7-4ddc-b051-2331c68b6a6e"}
+
+    def test_list_integer_count_fail_closed(self):
+        try:
+            collect_placements_from_dashboard(self.LIST_SUMMARY)
+            raise AssertionError("expected PlacementParseError")
+        except PlacementParseError as e:
+            assert "18" in str(e)
+
+    def test_missing_array_fail_closed(self):
+        try:
+            collect_placements_from_dashboard({"id": "d1", "name": "x"})
+            raise AssertionError("expected PlacementParseError")
+        except PlacementParseError:
+            pass
+
+    def test_list_count_does_not_trigger_add(self):
+        """Replay 9d5390b pass2: swallowing GET parse used to POST 6 more tiles."""
+        spec = DashboardSpec(
+            name="Kiro Management Dashboard",
+            description="",
+            widgets=[WidgetSpec(
+                name="Observation Volume", description="", view="observations",
+                chart_type="LINE_TIME_SERIES", dimensions=[],
+                metrics=[{"measure": "count", "agg": "sum"}],
+            )],
+        )
+        client = LangfuseClient("http://localhost:3000", "pk-test", "sk-test")
+
+        def boom(_dashboard_id):
+            placements, _ = collect_placements_from_dashboard(self.LIST_SUMMARY)
+            return placements
+
+        with mock.patch.object(client, "find_dashboard_by_name", return_value={"id": "cmw56dxbi0005ps30fvhgrcjg", "name": spec.name}):
+            with mock.patch.object(client, "find_widget_by_name", return_value={"id": "cmw60edn9001bps301ticm3xk", "name": "Observation Volume"}):
+                with mock.patch.object(client, "update_widget", return_value={"id": "cmw60edn9001bps301ticm3xk"}):
+                    with mock.patch.object(client, "get_dashboard_placements", side_effect=boom):
+                        with mock.patch.object(client, "add_placement") as add_pl:
+                            result = provision_dashboard(client, spec, dry_run=False)
+        add_pl.assert_not_called()
+        assert result["placements"] == []
+        assert any("fail-closed" in e for e in result["errors"])
+
+    def test_get_exception_fail_closed_not_empty_set(self):
         spec = DashboardSpec(
             name="Test",
             description="",
@@ -354,11 +480,52 @@ class TestPlacementIdempotency:
         with mock.patch.object(client, "find_dashboard_by_name", return_value={"id": "d1", "name": "Test"}):
             with mock.patch.object(client, "find_widget_by_name", return_value={"id": "w1", "name": "W1"}):
                 with mock.patch.object(client, "update_widget", return_value={"id": "w1"}):
-                    with mock.patch.object(
-                        client, "get_dashboard_placements",
-                        return_value=[{"widget": {"id": "w1"}}],
-                    ):
+                    with mock.patch.object(client, "get_dashboard_placements", side_effect=RuntimeError("HTTP 500")):
                         with mock.patch.object(client, "add_placement") as add_pl:
                             result = provision_dashboard(client, spec, dry_run=False)
         add_pl.assert_not_called()
         assert result["placements"] == []
+        assert result["errors"]
+
+
+class TestFailedAcceptanceCleanupPlan:
+    def test_deletes_only_listed_ids_keeps_originals(self):
+        current = (
+            [{"id": f"orig-{i}", "widgetId": f"ow{i}"} for i in range(6)]
+            + [{"id": "f382efd6-9be7-4ddc-b051-2331c68b6a6e", "widgetId": "cmw60edn9001bps301ticm3xk"}]
+            + [{"id": "0c340079-379c-43c8-a67f-4ce167593b04", "widgetId": "cmw60edn9001bps301ticm3xk"}]
+        )
+        plan = plan_failed_acceptance_cleanup(
+            current,
+            [
+                "f382efd6-9be7-4ddc-b051-2331c68b6a6e",
+                "0c340079-379c-43c8-a67f-4ce167593b04",
+                "not-on-dashboard",
+            ],
+            keep_minimum=6,
+        )
+        assert plan["remaining_after"] == 6
+        assert plan["safe"] is True
+        assert "orig-0" not in plan["delete_ids"]
+        assert len(plan["delete_ids"]) == 2
+
+    def test_refuses_if_below_original_count(self):
+        current = [{"id": "only-one", "widgetId": "w"}]
+        try:
+            plan_failed_acceptance_cleanup(current, ["only-one"], keep_minimum=6)
+            raise AssertionError("expected CleanupSafetyError")
+        except CleanupSafetyError:
+            pass
+
+    def test_bundled_plan_file_has_24_failed_ids_and_keep_counts(self):
+        plan = load_cleanup_plan(
+            str(Path(__file__).parent.parent / ".kiro" / "hooks" / "failed-acceptance-placements-9d5390b.json")
+        )
+        mgmt = next(d for d in plan["dashboards"] if "Management" in d["name"])
+        eng = next(d for d in plan["dashboards"] if "Engineering" in d["name"])
+        assert mgmt["keep_count_after"] == 6
+        assert eng["keep_count_after"] == 13
+        assert len(mgmt["delete_placement_ids"]) == 12
+        assert len(eng["delete_placement_ids"]) == 12
+        assert mgmt["id"] == "cmw56dxbi0005ps30fvhgrcjg"
+        assert eng["id"] == "cmw56dypz000jps309d0rfh58"

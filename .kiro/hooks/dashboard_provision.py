@@ -51,6 +51,7 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass
@@ -272,7 +273,10 @@ class LangfuseClient:
         req = urllib.request.Request(url, data=body, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read().decode())
+                raw = resp.read().decode()
+                if not raw.strip():
+                    return {}
+                return json.loads(raw)
         except urllib.error.HTTPError as e:
             error_body = e.read().decode() if e.fp else ""
             raise RuntimeError(f"HTTP {e.code}: {error_body[:500]}") from e
@@ -331,7 +335,7 @@ class LangfuseClient:
         return self._request("PATCH", f"/api/public/unstable/dashboard-widgets/{widget_id}", spec.to_api_payload())
 
     def add_placement(self, dashboard_id: str, widget_id: str, x: int, y: int, width: int = 6, height: int = 6) -> dict:
-        """Add widget placement to dashboard."""
+        """Add widget placement. POST body uses documented widgetId (not widget.id)."""
         return self._request("POST", f"/api/public/unstable/dashboards/{dashboard_id}/placements", {
             "type": "widget",
             "widgetId": widget_id,
@@ -341,29 +345,170 @@ class LangfuseClient:
             "height": height,
         })
 
+    def get_dashboard(self, dashboard_id: str) -> dict:
+        """GET /api/public/unstable/dashboards/{dashboardId}.
+
+        Documented 200 shape (langfuse public unstable API):
+          {id, name, description, createdAt, updatedAt,
+           definition: {widgets: [{type, id, widgetId, x, y, width, height}]}}
+        `definition.widgets[].id` is the *placement* UUID.
+        `definition.widgets[].widgetId` is the widget id (same field as POST).
+        There is no top-level placements array on GET-by-id.
+        """
+        return self._request("GET", f"/api/public/unstable/dashboards/{dashboard_id}")
+
     def get_dashboard_placements(self, dashboard_id: str) -> list[dict]:
-        """Get placements for a dashboard (top-level or definition.placements)."""
-        dashboard = self._request("GET", f"/api/public/unstable/dashboards/{dashboard_id}")
-        placements = dashboard.get("placements") or []
-        definition = dashboard.get("definition") if isinstance(dashboard.get("definition"), dict) else {}
-        if not placements:
-            placements = definition.get("placements") or []
+        """Return placement objects from GET-by-id. Raises PlacementParseError on list-count shapes."""
+        dashboard = self.get_dashboard(dashboard_id)
+        placements, _source = collect_placements_from_dashboard(dashboard)
         return placements
+
+    def delete_placement(self, dashboard_id: str, placement_id: str) -> dict:
+        """DELETE /api/public/unstable/dashboards/{dashboardId}/placements/{placementId}.
+
+        Removes a tile without deleting the widget object.
+        """
+        return self._request(
+            "DELETE",
+            f"/api/public/unstable/dashboards/{dashboard_id}/placements/{placement_id}",
+        )
+
+
+class PlacementParseError(ValueError):
+    """GET dashboard did not contain a documented placement array. Fail closed."""
+
+
+class CleanupSafetyError(ValueError):
+    """Cleanup would drop below the original tile counts. Refuse."""
+
+
+def collect_placements_from_dashboard(dashboard: dict) -> tuple[list[dict], str]:
+    """Parse placements from the documented GET dashboard 200 body.
+
+    Evidence (local acceptance 9d5390ba / evidence_d8fc.json):
+    - LIST `/unstable/dashboards` reports `placements` as an INTEGER COUNT
+      (management 6→12→18, engineering 13→19→25). That is not iterable tiles.
+    - GET `/unstable/dashboards/{id}` 200 is `{definition: {widgets: [...]}}`
+      with each tile `{type, id, widgetId, x, y, width, height}`.
+    - Treating a missing array or an integer count as `[]` made pass2 POST 6+6
+      more tiles. Swallowing TypeError did the same.
+
+    Fail closed: integer `placements`, missing `definition.widgets`, or a
+    non-object body must raise — never look like "nothing placed yet".
+    """
+    if not isinstance(dashboard, dict):
+        raise PlacementParseError(
+            f"GET dashboard returned {type(dashboard).__name__}, expected object"
+        )
+
+    definition = dashboard.get("definition")
+    if isinstance(definition, dict) and isinstance(definition.get("widgets"), list):
+        widgets = definition["widgets"]
+        placements = [p for p in widgets if isinstance(p, dict)]
+        if len(placements) != len(widgets):
+            raise PlacementParseError(
+                "definition.widgets contains non-object entries; refusing to treat as empty"
+            )
+        return placements, "definition.widgets"
+
+    raw = dashboard.get("placements")
+    if isinstance(raw, int):
+        raise PlacementParseError(
+            f"placements is an integer count ({raw}), not a tile array. "
+            "This is the LIST summary field from evidence_d8fc.json. "
+            "Use GET /dashboards/{{id}} and parse definition.widgets."
+        )
+    if isinstance(raw, list):
+        placements = [p for p in raw if isinstance(p, dict)]
+        if len(placements) != len(raw):
+            raise PlacementParseError(
+                "top-level placements contains non-object entries; refusing to treat as empty"
+            )
+        return placements, "placements"
+
+    keys = list(dashboard.keys())
+    def_keys = list(definition.keys()) if isinstance(definition, dict) else None
+    raise PlacementParseError(
+        f"No documented placement array. top-level keys={keys} definition_keys={def_keys}. "
+        "Expected definition.widgets (GET-by-id) with widgetId on each tile."
+    )
 
 
 def extract_placed_widget_ids(placements: list) -> set[str]:
-    """Collect widget ids already on a dashboard regardless of placement shape."""
+    """Collect widget ids from documented placement objects.
+
+    Documented field is `widgetId` (POST addPlacement and GET definition.widgets).
+    Placement `id` is the tile UUID — never treat it as the widget id.
+    Nested `widget.id` is an undocumented guess that hid the 9d5390b failure.
+    """
+    if isinstance(placements, int):
+        raise PlacementParseError(
+            f"placements is an integer count ({placements}), not a tile array"
+        )
+    if not isinstance(placements, list):
+        raise PlacementParseError(
+            f"placements is {type(placements).__name__}, expected list of objects"
+        )
     ids: set[str] = set()
-    for p in placements or []:
+    for p in placements:
+        if not isinstance(p, dict):
+            raise PlacementParseError("placement entry is not an object")
+        wid = p.get("widgetId")
+        if not isinstance(wid, str) or not wid:
+            wid = p.get("widget_id") if isinstance(p.get("widget_id"), str) else None
+        if isinstance(wid, str) and wid:
+            ids.add(wid)
+    return ids
+
+
+def extract_placement_ids(placements: list) -> set[str]:
+    """Collect placement tile UUIDs (`id` on definition.widgets), not widgetId."""
+    if not isinstance(placements, list):
+        raise PlacementParseError("placements is not a list")
+    ids: set[str] = set()
+    for p in placements:
         if not isinstance(p, dict):
             continue
-        wid = p.get("widgetId") or p.get("widget_id")
-        widget = p.get("widget")
-        if not wid and isinstance(widget, dict):
-            wid = widget.get("id")
-        if wid:
-            ids.add(str(wid))
+        pid = p.get("id")
+        if isinstance(pid, str) and pid:
+            ids.add(pid)
     return ids
+
+
+def plan_failed_acceptance_cleanup(
+    current_placements: list,
+    delete_placement_ids: list[str],
+    keep_minimum: int,
+) -> dict:
+    """Plan DELETE of failed-acceptance tiles only.
+
+    Original management 6 and engineering 13 must survive. Only placement UUIDs
+    created by the failed 9d5390b apply (pass1+pass2) are eligible.
+    """
+    if not isinstance(current_placements, list):
+        raise PlacementParseError("current placements is not a list")
+    present = extract_placement_ids(current_placements)
+    requested = [pid for pid in delete_placement_ids if isinstance(pid, str) and pid]
+    to_delete = [pid for pid in requested if pid in present]
+    missing = [pid for pid in requested if pid not in present]
+    remaining = len(current_placements) - len(to_delete)
+    if remaining < keep_minimum:
+        raise CleanupSafetyError(
+            f"Cleanup would leave {remaining} tiles, below keep_minimum={keep_minimum}. "
+            "Original tiles must survive. Refusing."
+        )
+    unknown_on_dashboard = [
+        pid for pid in requested if pid not in present
+    ]
+    return {
+        "delete_ids": to_delete,
+        "already_absent": missing,
+        "current_count": len(current_placements),
+        "remaining_after": remaining,
+        "keep_minimum": keep_minimum,
+        "unknown_on_dashboard": unknown_on_dashboard,
+        "safe": remaining >= keep_minimum,
+    }
 
 
 def provision_dashboard(
@@ -380,6 +525,9 @@ def provision_dashboard(
         "dashboard_id": None,
         "widgets": [],
         "placements": [],
+        "placements_already": None,
+        "placements_skipped": 0,
+        "placement_parse": None,
         "errors": [],
         "dry_run": dry_run,
     }
@@ -429,18 +577,33 @@ def provision_dashboard(
 
         result["widgets"].append(widget_result)
 
-    # Add placements (only for newly created dashboard or if widget doesn't have placement)
+    # Place widgets only when GET-by-id definition.widgets does not already
+    # contain this widgetId. Fail closed if the GET shape cannot be parsed —
+    # never treat an integer LIST count or a missing array as "nothing placed".
     if result["dashboard_id"] and not dry_run:
+        placed_widget_ids: set[str] | None = None
         try:
             existing_placements = client.get_dashboard_placements(result["dashboard_id"])
             placed_widget_ids = extract_placed_widget_ids(existing_placements)
-        except Exception:
-            placed_widget_ids = set()
+            result["placements_already"] = len(existing_placements)
+            result["placement_parse"] = "definition.widgets widgetId"
+        except PlacementParseError as e:
+            result["errors"].append(
+                f"Placement GET parse failed (fail-closed, not adding tiles): {e}"
+            )
+        except Exception as e:
+            result["errors"].append(
+                f"Placement GET failed (fail-closed, not adding tiles): {e}"
+            )
 
-        for i, widget_result in enumerate(result["widgets"]):
-            if widget_result["id"] and widget_result["id"] not in placed_widget_ids:
+        if placed_widget_ids is not None:
+            for i, widget_result in enumerate(result["widgets"]):
+                if not widget_result["id"]:
+                    continue
+                if widget_result["id"] in placed_widget_ids:
+                    result["placements_skipped"] += 1
+                    continue
                 try:
-                    # Grid layout: 2 columns, 6 units wide each
                     x = (i % 2) * 6
                     y = (i // 2) * 6
                     placement = client.add_placement(
@@ -482,6 +645,83 @@ def get_engineering_dashboard() -> DashboardSpec:
     )
 
 
+def load_cleanup_plan(path: str) -> dict:
+    data = json.loads(Path(path).read_text())
+    if not isinstance(data, dict) or not isinstance(data.get("dashboards"), list):
+        raise ValueError("cleanup file must be an object with dashboards[]")
+    return data
+
+
+def run_inspect_placements(client: LangfuseClient, dashboard_ids: list[str]) -> list[dict]:
+    """Dump GET-by-id placement parse for parent debugging. No mutations."""
+    rows = []
+    for did in dashboard_ids:
+        row = {"dashboard_id": did, "ok": False}
+        try:
+            dashboard = client.get_dashboard(did)
+            row["name"] = dashboard.get("name")
+            row["top_level_keys"] = list(dashboard.keys()) if isinstance(dashboard, dict) else None
+            definition = dashboard.get("definition") if isinstance(dashboard, dict) else None
+            row["definition_keys"] = list(definition.keys()) if isinstance(definition, dict) else None
+            placements, source = collect_placements_from_dashboard(dashboard)
+            row["ok"] = True
+            row["placement_source"] = source
+            row["placement_count"] = len(placements)
+            row["widgetIds"] = sorted(extract_placed_widget_ids(placements))
+            row["placement_ids"] = sorted(extract_placement_ids(placements))
+            row["list_placements_field_type"] = type(dashboard.get("placements")).__name__
+        except Exception as e:
+            row["error"] = str(e)
+        rows.append(row)
+    return rows
+
+
+def run_cleanup_placements(
+    client: LangfuseClient,
+    plan: dict,
+    execute: bool,
+) -> list[dict]:
+    """Delete only listed failed-acceptance placement UUIDs. Default is dry-run."""
+    results = []
+    for entry in plan.get("dashboards") or []:
+        dashboard_id = entry.get("id")
+        keep_minimum = int(entry.get("keep_count_after", 0))
+        delete_ids = list(entry.get("delete_placement_ids") or [])
+        row = {
+            "dashboard_name": entry.get("name"),
+            "dashboard_id": dashboard_id,
+            "execute": execute,
+            "errors": [],
+            "deleted": [],
+            "would_delete": [],
+        }
+        try:
+            current = client.get_dashboard_placements(dashboard_id)
+            safety = plan_failed_acceptance_cleanup(current, delete_ids, keep_minimum)
+            row["plan"] = safety
+            if not safety["safe"]:
+                row["errors"].append("safety gate failed")
+                results.append(row)
+                continue
+            for pid in safety["delete_ids"]:
+                if execute:
+                    client.delete_placement(dashboard_id, pid)
+                    row["deleted"].append(pid)
+                else:
+                    row["would_delete"].append(pid)
+            if execute:
+                after = client.get_dashboard_placements(dashboard_id)
+                row["remaining_after"] = len(after)
+                if len(after) < keep_minimum:
+                    row["errors"].append(
+                        f"Post-delete count {len(after)} below keep_minimum {keep_minimum}"
+                    )
+        except Exception as e:
+            row["errors"].append(str(e))
+        results.append(row)
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Provision Langfuse dashboards for Kiro workflow monitoring"
@@ -490,6 +730,31 @@ def main():
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
     parser.add_argument("--dashboard", choices=["management", "engineering", "both"], default="both",
                        help="Which dashboard to provision")
+    parser.add_argument(
+        "--inspect-placements",
+        action="store_true",
+        help="GET dashboards by id and print documented definition.widgets parse. No mutations.",
+    )
+    parser.add_argument(
+        "--cleanup-placements",
+        action="store_true",
+        help="Plan/delete failed-acceptance placement UUIDs from --from-file. Dry-run unless --execute-cleanup.",
+    )
+    parser.add_argument(
+        "--from-file",
+        help="JSON cleanup plan (failed-acceptance placement UUIDs). Original 6/13 must survive.",
+    )
+    parser.add_argument(
+        "--execute-cleanup",
+        action="store_true",
+        help="Actually DELETE listed placements. Default for --cleanup-placements is dry-run.",
+    )
+    parser.add_argument(
+        "--dashboard-id",
+        action="append",
+        dest="dashboard_ids",
+        help="Dashboard id for --inspect-placements (repeatable)",
+    )
 
     # Credentials from environment
     parser.add_argument("--base-url", default=os.environ.get("LANGFUSE_BASE_URL", "http://127.0.0.1:3000"))
@@ -510,6 +775,29 @@ def main():
     if not available:
         print(f"ERROR: {message}", file=sys.stderr)
         sys.exit(1)
+
+    if args.inspect_placements:
+        ids = list(args.dashboard_ids or [])
+        if args.from_file:
+            plan = load_cleanup_plan(args.from_file)
+            ids.extend(d.get("id") for d in plan.get("dashboards") or [] if d.get("id"))
+        if not ids:
+            print("ERROR: --inspect-placements needs --dashboard-id or --from-file", file=sys.stderr)
+            sys.exit(1)
+        rows = run_inspect_placements(client, ids)
+        print(json.dumps(rows, indent=2))
+        sys.exit(0 if all(r.get("ok") for r in rows) else 1)
+
+    if args.cleanup_placements:
+        if not args.from_file:
+            print("ERROR: --cleanup-placements requires --from-file", file=sys.stderr)
+            sys.exit(1)
+        plan = load_cleanup_plan(args.from_file)
+        execute = bool(args.execute_cleanup) and not args.dry_run
+        rows = run_cleanup_placements(client, plan, execute=execute)
+        print(json.dumps(rows, indent=2))
+        has_errors = any(r.get("errors") for r in rows)
+        sys.exit(1 if has_errors else 0)
 
     results = []
     dashboards_to_provision = []
@@ -532,6 +820,10 @@ def main():
             print("Widgets:")
             for w in result["widgets"]:
                 print(f"  - {w['name']}: {w['action']} (id={w['id']})")
+            if result.get("placements_already") is not None:
+                print(f"Placements already on dashboard: {result['placements_already']}")
+            if result.get("placements_skipped"):
+                print(f"Placements skipped (widgetId already present): {result['placements_skipped']}")
             if result["placements"]:
                 print(f"Placements added: {len(result['placements'])}")
             if result["errors"]:

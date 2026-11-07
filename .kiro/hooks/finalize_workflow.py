@@ -44,7 +44,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -491,8 +491,9 @@ def submit_score(
     value: float,
     comment: str | None = None,
     data_type: str = "BOOLEAN",
+    metadata: dict | None = None,
 ) -> dict:
-    """Submit a score to Langfuse."""
+    """Submit a score to Langfuse POST /api/public/scores."""
     url = f"{base_url.rstrip('/')}/api/public/scores"
     auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
 
@@ -504,6 +505,8 @@ def submit_score(
     }
     if comment:
         payload["comment"] = comment[:1000]  # Langfuse limit
+    if metadata:
+        payload["metadata"] = metadata
 
     req = urllib.request.Request(
         url,
@@ -516,7 +519,8 @@ def submit_score(
     )
 
     with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode())
+        raw = resp.read().decode()
+        return json.loads(raw) if raw.strip() else {}
 
 
 def result_to_score_value(outcome: ScoreOutcome) -> float | None:
@@ -570,6 +574,264 @@ def load_session_trace_map(workspace: str) -> dict[str, str]:
     return session_trace_map
 
 
+SCORE_SCOPE = "workflow-objective-checks"
+SCORE_ATTACHED_TO = "final-completed-step-trace"
+OBS_METADATA_KEYS = (
+    "workflow.run_id,workflow.step_id,workflow.step_session_id,"
+    "kiro.session_id,git.sha"
+)
+
+
+@dataclass
+class TraceAssociation:
+    """Score target: a real ingested step trace, never a workflow-root stand-in."""
+    trace_id: str | None
+    source: str
+    step_id: str | None = None
+    step_session_id: str | None = None
+    observation_count: int | None = None
+    git_sha: str | None = None
+    workflow_run_id: str | None = None
+    association_method: str | None = None
+    score_scope: str = SCORE_SCOPE
+    attached_to: str = SCORE_ATTACHED_TO
+    not_workflow_root_trace: bool = True
+
+
+@dataclass
+class ProvenanceGate:
+    ok: bool
+    workspace_head: str | None
+    trace_git_sha: str | None
+    reason: str
+
+
+def flatten_obs_metadata(meta: object) -> dict[str, str]:
+    """Flatten observations-v2 metadata (dict, nested dict, or [{key,value}])."""
+    out: dict[str, str] = {}
+    if isinstance(meta, dict):
+        for k, v in meta.items():
+            if isinstance(v, dict):
+                for k2, v2 in v.items():
+                    if v2 is None or isinstance(v2, (dict, list)):
+                        continue
+                    out[f"{k}.{k2}"] = str(v2)
+            elif v is None or isinstance(v, (dict, list)):
+                continue
+            else:
+                out[str(k)] = str(v)
+    elif isinstance(meta, list):
+        for item in meta:
+            if isinstance(item, dict) and item.get("key") is not None:
+                val = item.get("value")
+                if val is None or isinstance(val, (dict, list)):
+                    continue
+                out[str(item["key"])] = str(val)
+    return out
+
+
+def git_sha_equivalent(a: str | None, b: str | None) -> bool:
+    """True when a and b name the same commit (full or unambiguous abbreviation)."""
+    if not a or not b:
+        return False
+    x, y = a.lower().strip(), b.lower().strip()
+    if x == y:
+        return True
+    shorter, longer = (x, y) if len(x) < len(y) else (y, x)
+    return len(shorter) >= 7 and longer.startswith(shorter)
+
+
+def workspace_git_sha(workspace: str) -> str | None:
+    """HEAD of the workspace worktree. Never invents a SHA."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", workspace, "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    sha = (proc.stdout or "").strip()
+    return sha or None
+
+
+def evaluate_provenance_gate(
+    workspace_head: str | None,
+    trace_git_sha: str | None,
+) -> ProvenanceGate:
+    """Refuse scoring a historical ingest with checks run at a later SHA.
+
+    Live gate (evidence_d8fc.json): wf_7482 traces carry
+    git.sha=5706b0662db599dce44e04daf890161785c4192c; checks at 9d5390b must not
+    be attributed to that code. Missing git.sha also fails — cannot prove match.
+    """
+    if not workspace_head:
+        return ProvenanceGate(
+            False, workspace_head, trace_git_sha,
+            "Cannot read workspace git HEAD; refuse score submit without check provenance.",
+        )
+    if not trace_git_sha:
+        return ProvenanceGate(
+            False, workspace_head, trace_git_sha,
+            "Trace observations have no metadata.git.sha; cannot prove the ingested "
+            "run matches this commit. Fresh native workflow at this HEAD is required.",
+        )
+    if git_sha_equivalent(workspace_head, trace_git_sha):
+        return ProvenanceGate(
+            True, workspace_head, trace_git_sha,
+            f"trace git.sha matches workspace HEAD {workspace_head}",
+        )
+    return ProvenanceGate(
+        False, workspace_head, trace_git_sha,
+        f"Provenance mismatch: trace git.sha={trace_git_sha} is not workspace HEAD "
+        f"{workspace_head}. Historical run cannot receive checks from today's commit. "
+        "Run a fresh native workflow at this HEAD.",
+    )
+
+
+def _iso_window(wf_state: WorkflowState) -> tuple[str | None, str | None]:
+    """Bounded observations-v2 window from native timestamps (+/- 1 day)."""
+    start = wf_state.started_at or wf_state.created_at
+    end = wf_state.ended_at or wf_state.started_at or wf_state.created_at
+    if not start:
+        return None, None
+
+    def _shift(iso: str, seconds: int) -> str:
+        ms = parse_iso_ms(iso)
+        if ms is None:
+            return iso
+        dt = datetime.fromtimestamp(ms / 1000.0 + seconds, tz=timezone.utc)
+        return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    return _shift(start, -86400), _shift(end or start, 86400)
+
+
+def list_observations_v2(
+    base_url: str,
+    public_key: str,
+    secret_key: str,
+    *,
+    trace_id: str | None = None,
+    workflow_run_id: str | None = None,
+    from_start: str | None = None,
+    to_start: str | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """GET /api/public/v2/observations with fields including metadata.
+
+    Docs: if `fields` omits `metadata`, the group is absent (parent saw null).
+    Request core,basic,metadata,trace_context and expandMetadata for workflow/git keys.
+    Always bound with fromStartTime/toStartTime when timestamps are known.
+    """
+    params: dict[str, str] = {
+        "fields": "core,basic,metadata,trace_context",
+        "expandMetadata": OBS_METADATA_KEYS,
+        "limit": str(limit),
+    }
+    if trace_id:
+        params["traceId"] = trace_id
+    if from_start:
+        params["fromStartTime"] = from_start
+    if to_start:
+        params["toStartTime"] = to_start
+    if workflow_run_id:
+        params["filter"] = json.dumps([{
+            "type": "stringObject",
+            "column": "metadata",
+            "key": "workflow.run_id",
+            "operator": "=",
+            "value": workflow_run_id,
+        }])
+
+    qs = urllib.parse.urlencode(params)
+    url = f"{base_url.rstrip('/')}/api/public/v2/observations?{qs}"
+    auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        body = json.loads(resp.read().decode())
+    if isinstance(body, dict):
+        data = body.get("data") or body.get("observations") or []
+        return data if isinstance(data, list) else []
+    return body if isinstance(body, list) else []
+
+
+def observations_link_to_workflow(
+    observations: list[dict],
+    wf_state: WorkflowState,
+) -> tuple[bool, str, dict]:
+    """True when observations-v2 metadata ties this trace to a native step.
+
+    Langfuse sessionId is workspace_key, not the Kiro step session. Association
+    must use metadata.workflow.run_id plus step_session_id / step_id / kiro.session_id.
+    Empty metadata (fields group not requested) cannot associate.
+    """
+    if not observations:
+        return False, "no observations returned for this trace", {}
+
+    native_sessions = {s.session_id for s in wf_state.steps if s.session_id}
+    native_ids = {s.node_id for s in wf_state.steps if s.node_id}
+    parent_id = wf_state.parent_session_id
+    metas = [flatten_obs_metadata(o.get("metadata")) for o in observations if isinstance(o, dict)]
+    if not any(metas):
+        return False, (
+            "observations v2 returned no metadata (need fields=core,basic,metadata). "
+            "Cannot associate this trace with the native workflow."
+        ), {"observation_count": len(observations)}
+
+    matched_step_id = None
+    matched_session = None
+    matched_run = None
+    git_sha = None
+    for meta in metas:
+        run_id = meta.get("workflow.run_id")
+        step_session = meta.get("workflow.step_session_id") or meta.get("kiro.session_id")
+        step_id = meta.get("workflow.step_id")
+        if meta.get("git.sha") and not git_sha:
+            git_sha = meta.get("git.sha")
+        if run_id and run_id != wf_state.workflow_id:
+            continue
+        if step_session and parent_id and step_session == parent_id and step_session not in native_sessions:
+            continue
+        step_ok = bool(step_session and step_session in native_sessions)
+        id_ok = bool(step_id and step_id in native_ids)
+        run_ok = bool(run_id and run_id == wf_state.workflow_id)
+        if run_ok and (step_ok or id_ok):
+            matched_run = run_id
+            matched_step_id = step_id if id_ok else matched_step_id
+            matched_session = step_session if step_ok else matched_session
+            if step_ok and not matched_step_id:
+                for s in wf_state.steps:
+                    if s.session_id == step_session:
+                        matched_step_id = s.node_id
+                        break
+
+    if not matched_run and not matched_session:
+        return False, (
+            f"observations metadata does not associate this trace with {wf_state.workflow_id} "
+            "(need workflow.run_id and a native step session/id). Not a workflow-root trace."
+        ), {"observation_count": len(observations), "git.sha": git_sha}
+
+    details = {
+        "observation_count": len(observations),
+        "workflow.run_id": matched_run or wf_state.workflow_id,
+        "workflow.step_id": matched_step_id,
+        "workflow.step_session_id": matched_session,
+        "git.sha": git_sha,
+    }
+    return True, (
+        f"observations-v2 metadata matches workflow {wf_state.workflow_id} "
+        f"step={matched_step_id or matched_session} obs={len(observations)}"
+    ), details
+
+
 def discover_step_traces(workspace: str, wf_state: WorkflowState) -> list[dict]:
     """Associate native step sessions with ingested 32-hex traces.
 
@@ -593,48 +855,130 @@ def discover_step_traces(workspace: str, wf_state: WorkflowState) -> list[dict]:
     return step_traces
 
 
+def _association_from_local(
+    chosen: dict,
+    source: str,
+    method: str,
+) -> TraceAssociation:
+    return TraceAssociation(
+        trace_id=chosen["trace_id"],
+        source=source,
+        step_id=chosen.get("node_id"),
+        step_session_id=chosen.get("session_id"),
+        association_method=method,
+        workflow_run_id=None,
+    )
+
+
 def discover_trace_id_for_score(
     workspace: str,
     workflow_id: str,
     wf_state: WorkflowState,
     explicit_trace_id: str | None = None,
-) -> tuple[str | None, str]:
+    observations_for_trace=None,
+    observations_for_run=None,
+) -> TraceAssociation:
     """Canonical score target: last completed *step* 32-hex OTEL trace.
 
     Never defaults to workflow_id (wf_* is not an OTEL trace).
     Never uses hung parent-chat traces.
-    Explicit --trace-id must be 32-hex AND belong to a step of this run.
+    Never pretends the final step is a workflow-root trace.
+    Explicit --trace-id must be 32-hex AND belong to a step of this run,
+    proven either by local session state OR observations-v2 metadata.
     """
-    if workflow_id and is_valid_otel_trace_id(workflow_id):
-        pass  # theoretically possible; still must match a step
-    elif workflow_id and not explicit_trace_id:
-        # wf_* is expected and is NOT a trace id
-        pass
-
+    empty = TraceAssociation(trace_id=None, source="", workflow_run_id=workflow_id)
     step_traces = discover_step_traces(workspace, wf_state)
-    step_ids = {t["trace_id"] for t in step_traces if not t.get("is_parent_chat")}
-    # If a step happens to be the parent session (unusual), still allow it as a step
-    if not step_ids:
-        step_ids = {t["trace_id"] for t in step_traces}
+    local_ids = {t["trace_id"] for t in step_traces}
+    non_parent = {t["trace_id"] for t in step_traces if not t.get("is_parent_chat")}
+
+    def _from_obs(trace_id: str, method: str) -> TraceAssociation | None:
+        if observations_for_trace is None:
+            return None
+        try:
+            obs = observations_for_trace(trace_id)
+        except Exception as e:
+            return TraceAssociation(
+                trace_id=None,
+                source=f"observations-v2 lookup failed for {trace_id}: {e}",
+                workflow_run_id=workflow_id,
+                association_method="observations-v2-error",
+            )
+        ok, reason, details = observations_link_to_workflow(obs, wf_state)
+        if not ok:
+            return TraceAssociation(
+                trace_id=None,
+                source=reason,
+                observation_count=details.get("observation_count"),
+                git_sha=details.get("git.sha"),
+                workflow_run_id=workflow_id,
+                association_method=method,
+            )
+        return TraceAssociation(
+            trace_id=trace_id,
+            source=reason,
+            step_id=details.get("workflow.step_id"),
+            step_session_id=details.get("workflow.step_session_id"),
+            observation_count=details.get("observation_count"),
+            git_sha=details.get("git.sha"),
+            workflow_run_id=details.get("workflow.run_id") or workflow_id,
+            association_method=method,
+        )
 
     if explicit_trace_id:
         candidate = explicit_trace_id.lower()
         if not is_valid_otel_trace_id(candidate):
-            return None, (
+            empty.source = (
                 f"Invalid --trace-id {explicit_trace_id!r}: must be a 32-hex OTEL trace id, "
                 "not a workflow id (wf_...)"
             )
-        if candidate not in {t["trace_id"] for t in step_traces}:
-            return None, (
+            return empty
+        if candidate in local_ids:
+            if non_parent and candidate not in non_parent:
+                empty.source = (
+                    f"--trace-id {candidate} is the parent chat, not a workflow step of {workflow_id}"
+                )
+                return empty
+            matched = next(t for t in step_traces if t["trace_id"] == candidate)
+            assoc = _association_from_local(
+                matched,
+                f"explicit --trace-id (step {matched['node_id']})",
+                "explicit-local-state",
+            )
+            obs_assoc = _from_obs(candidate, "explicit-observations-v2")
+            if obs_assoc and obs_assoc.trace_id:
+                assoc.git_sha = obs_assoc.git_sha
+                assoc.observation_count = obs_assoc.observation_count
+                assoc.workflow_run_id = obs_assoc.workflow_run_id or workflow_id
+                assoc.source = (
+                    f"explicit --trace-id (step {matched['node_id']}); {obs_assoc.source}"
+                )
+                assoc.association_method = "explicit-local-state+observations-v2"
+            elif obs_assoc and obs_assoc.association_method == "observations-v2-error":
+                assoc.source = f"{assoc.source}; {obs_assoc.source}"
+            return assoc
+
+        obs_assoc = _from_obs(candidate, "explicit-observations-v2")
+        if obs_assoc is None:
+            empty.source = (
                 f"--trace-id {candidate} is not associated with any step of {workflow_id}. "
+                "No local session map and observations-v2 was not queried. "
                 "Refusing dangling score submit."
             )
-        if candidate not in step_ids:
-            return None, (
-                f"--trace-id {candidate} is the parent chat, not a workflow step of {workflow_id}"
-            )
-        matched = next(t for t in step_traces if t["trace_id"] == candidate)
-        return candidate, f"explicit --trace-id (step {matched['node_id']})"
+            return empty
+        if obs_assoc.trace_id:
+            parent_sessions = {wf_state.parent_session_id} if wf_state.parent_session_id else set()
+            if obs_assoc.step_session_id and obs_assoc.step_session_id in parent_sessions:
+                if obs_assoc.step_session_id not in {s.session_id for s in wf_state.steps}:
+                    obs_assoc.trace_id = None
+                    obs_assoc.source = (
+                        f"--trace-id {candidate} is the parent chat, not a workflow step of {workflow_id}"
+                    )
+            return obs_assoc
+        obs_assoc.source = (
+            f"--trace-id {candidate} is not associated with any step of {workflow_id}. "
+            f"{obs_assoc.source} Refusing dangling score submit."
+        )
+        return obs_assoc
 
     completed_steps = [
         t for t in step_traces
@@ -642,13 +986,83 @@ def discover_trace_id_for_score(
     ]
     if completed_steps:
         chosen = completed_steps[-1]
-        return chosen["trace_id"], f"canonical last completed step '{chosen['node_id']}'"
+        assoc = _association_from_local(
+            chosen,
+            f"canonical last completed step '{chosen['node_id']}'",
+            "local-state",
+        )
+        obs_assoc = _from_obs(chosen["trace_id"], "observations-v2")
+        if obs_assoc and obs_assoc.trace_id:
+            assoc.git_sha = obs_assoc.git_sha
+            assoc.observation_count = obs_assoc.observation_count
+            assoc.workflow_run_id = obs_assoc.workflow_run_id or workflow_id
+            assoc.association_method = "local-state+observations-v2"
+        return assoc
 
-    return None, (
+    if observations_for_run is not None:
+        try:
+            run_obs = observations_for_run(workflow_id)
+        except Exception as e:
+            empty.source = f"observations-v2 workflow.run_id lookup failed: {e}"
+            empty.association_method = "observations-v2-error"
+            return empty
+        by_trace: dict[str, list[dict]] = {}
+        for o in run_obs or []:
+            if not isinstance(o, dict):
+                continue
+            tid = o.get("traceId") or o.get("trace_id")
+            if isinstance(tid, str) and is_valid_otel_trace_id(tid):
+                by_trace.setdefault(tid.lower(), []).append(o)
+        last_step = None
+        for step in wf_state.steps:
+            if (step.status or "").lower() != "completed":
+                continue
+            if wf_state.parent_session_id and step.session_id == wf_state.parent_session_id:
+                continue
+            last_step = step
+        candidates = []
+        for tid, obs in by_trace.items():
+            ok, reason, details = observations_link_to_workflow(obs, wf_state)
+            if not ok:
+                continue
+            if last_step and details.get("workflow.step_id") and details.get("workflow.step_id") != last_step.node_id:
+                continue
+            if last_step and details.get("workflow.step_session_id") and details.get("workflow.step_session_id") != last_step.session_id:
+                if details.get("workflow.step_id") != last_step.node_id:
+                    continue
+            candidates.append((tid, reason, details))
+        if len(candidates) == 1:
+            tid, reason, details = candidates[0]
+            return TraceAssociation(
+                trace_id=tid,
+                source=f"canonical last completed step via observations-v2: {reason}",
+                step_id=details.get("workflow.step_id"),
+                step_session_id=details.get("workflow.step_session_id"),
+                observation_count=details.get("observation_count"),
+                git_sha=details.get("git.sha"),
+                workflow_run_id=details.get("workflow.run_id") or workflow_id,
+                association_method="observations-v2-run-id",
+            )
+        if len(candidates) > 1 and last_step:
+            for tid, reason, details in candidates:
+                if details.get("workflow.step_id") == last_step.node_id or details.get("workflow.step_session_id") == last_step.session_id:
+                    return TraceAssociation(
+                        trace_id=tid,
+                        source=f"canonical last completed step via observations-v2: {reason}",
+                        step_id=details.get("workflow.step_id"),
+                        step_session_id=details.get("workflow.step_session_id"),
+                        observation_count=details.get("observation_count"),
+                        git_sha=details.get("git.sha"),
+                        workflow_run_id=details.get("workflow.run_id") or workflow_id,
+                        association_method="observations-v2-run-id",
+                    )
+
+    empty.source = (
         f"No ingested 32-hex step trace for {workflow_id}. "
         "Do not submit scores to workflow_id. Re-run after hooks export step traces, "
-        "or pass --trace-id of a verified step trace."
+        "query observations v2 with fields=metadata, or pass --trace-id of a verified step trace."
     )
+    return empty
 
 
 def list_scores_v3(
@@ -688,7 +1102,10 @@ def main():
     parser.add_argument("--workflow-id", "-w", help="Workflow ID (e.g., wf_xxx)")
     parser.add_argument("--workspace", required=True, help="Workspace path")
     parser.add_argument("--latest", action="store_true", help="Use most recent workflow")
-    parser.add_argument("--trace-id", help="Override trace ID for score submission")
+    parser.add_argument(
+        "--trace-id",
+        help="32-hex final-step OTEL trace. Must match this workflow via local state or observations v2 metadata (not a workflow-root id).",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Run checks but don't submit scores")
     parser.add_argument("--force", action="store_true", help="Re-run even if already scored")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
@@ -805,14 +1222,67 @@ def main():
             "duration_ms": result.duration_ms,
         }
 
-    # Discover trace ID for score submission
-    # CRITICAL: workflow_id is NOT a valid OTEL trace ID. Must use actual ingested trace.
-    trace_id, trace_source = discover_trace_id_for_score(
-        workspace, workflow_id, wf_state, args.trace_id
+    # Discover trace ID for score submission.
+    # CRITICAL: workflow_id is NOT a valid OTEL trace ID. Scores attach to a
+    # final-step 32-hex trace with run+SHA provenance, not a workflow-root trace.
+    base_url = os.environ.get("LANGFUSE_BASE_URL", "http://127.0.0.1:3000")
+    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
+    secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
+    from_start, to_start = _iso_window(wf_state)
+
+    observations_for_trace = None
+    observations_for_run = None
+    if public_key and secret_key:
+        def observations_for_trace(trace_id: str) -> list:
+            return list_observations_v2(
+                base_url, public_key, secret_key,
+                trace_id=trace_id,
+                from_start=from_start,
+                to_start=to_start,
+            )
+
+        def observations_for_run(run_id: str) -> list:
+            return list_observations_v2(
+                base_url, public_key, secret_key,
+                workflow_run_id=run_id,
+                from_start=from_start,
+                to_start=to_start,
+            )
+
+    assoc = discover_trace_id_for_score(
+        workspace, workflow_id, wf_state, args.trace_id,
+        observations_for_trace=observations_for_trace,
+        observations_for_run=observations_for_run,
     )
-    
+    trace_id = assoc.trace_id
+    trace_source = assoc.source
+
     output["trace_id"] = trace_id
     output["trace_source"] = trace_source
+    output["trace_association"] = {
+        "method": assoc.association_method,
+        "step_id": assoc.step_id,
+        "step_session_id": assoc.step_session_id,
+        "observation_count": assoc.observation_count,
+        "git.sha": assoc.git_sha,
+        "workflow.run_id": assoc.workflow_run_id or workflow_id,
+        "score_scope": assoc.score_scope,
+        "attached_to": assoc.attached_to,
+        "not_workflow_root_trace": assoc.not_workflow_root_trace,
+    }
+    output["native_wall_note"] = (
+        "Duration from native root startedAt/endedAt, not parent-chat agent latency. "
+        "Observation/trace counts are not workflow-run KPIs."
+    )
+
+    workspace_head = workspace_git_sha(workspace)
+    gate = evaluate_provenance_gate(workspace_head, assoc.git_sha)
+    output["provenance"] = {
+        "ok": gate.ok,
+        "workspace_head": gate.workspace_head,
+        "trace_git_sha": gate.trace_git_sha,
+        "reason": gate.reason,
+    }
 
     if not trace_id:
         msg = f"Cannot determine trace ID: {trace_source}"
@@ -820,39 +1290,65 @@ def main():
             output["trace_warning"] = msg
         else:
             output["errors"].append(msg)
-    
-    # Submit scores to Langfuse (if not dry run and credentials available)
-    if not args.dry_run:
-        base_url = os.environ.get("LANGFUSE_BASE_URL", "http://127.0.0.1:3000")
-        public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
-        secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
+    elif not gate.ok:
+        msg = f"Provenance gate blocked score submit: {gate.reason}"
+        if args.dry_run:
+            output["provenance_warning"] = msg
+        else:
+            output["errors"].append(msg)
 
+    # Submit scores only when associated AND provenance matches this HEAD.
+    if not args.dry_run:
         if not trace_id:
             output["errors"].append("Score submission skipped: no valid trace ID")
+        elif not gate.ok:
+            output["errors"].append(
+                "Score submission skipped: provenance/code mismatch. "
+                "Do not attach today's checks to a historical ingest."
+            )
         elif public_key and secret_key:
+            score_metadata = {
+                "score_scope": SCORE_SCOPE,
+                "attached_to": SCORE_ATTACHED_TO,
+                "not_workflow_root_trace": "true",
+                "workflow.run_id": workflow_id,
+                "workflow.step_id": assoc.step_id or "",
+                "workflow.step_session_id": assoc.step_session_id or "",
+                "git.sha": assoc.git_sha or "",
+                "check.git.sha": workspace_head or "",
+            }
             for name, result in results.items():
                 score_value = result_to_score_value(result.outcome)
                 if score_value is not None:
                     try:
-                        comment = f"{result.outcome.value} (exit={result.exit_code}, {result.duration_ms}ms) workflow={workflow_id}"
+                        comment = (
+                            f"{result.outcome.value} (exit={result.exit_code}, {result.duration_ms}ms) "
+                            f"workflow-objective-checks on final completed step trace "
+                            f"(not workflow-root). workflow={workflow_id} "
+                            f"step={assoc.step_id or ''} git.sha={assoc.git_sha or ''} "
+                            f"check.git.sha={workspace_head or ''}"
+                        )
                         submit_score(
                             base_url, public_key, secret_key,
                             trace_id=trace_id,
                             name=name,
                             value=score_value,
                             comment=comment,
+                            metadata=score_metadata,
                         )
                         output["scores_submitted"].append({
                             "name": name,
                             "value": score_value,
                             "trace_id": trace_id,
+                            "score_scope": SCORE_SCOPE,
+                            "attached_to": SCORE_ATTACHED_TO,
                         })
                     except Exception as e:
                         output["errors"].append(f"Score submission failed for {name}: {e}")
         else:
             output["errors"].append("Scores not submitted: LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY not set")
 
-        if args.verify_scores and trace_id and public_key and secret_key:
+        if args.verify_scores and trace_id and public_key and secret_key and output["scores_submitted"]:
             try:
                 output["scores_readback"] = list_scores_v3(base_url, public_key, secret_key, trace_id)
             except Exception as e:

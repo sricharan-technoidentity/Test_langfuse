@@ -72,10 +72,12 @@ curl -u "pk-lf-...":"sk-lf-..." \
 
 ```bash
 python3 .kiro/hooks/dashboard_provision.py --json
+python3 .kiro/hooks/dashboard_provision.py --json   # second apply must add 0 placements
 ```
 
 Do not drag-drop guessed JSON. Observation widgets are not workflow-run counts.
-See RUNTIME_ACCEPTANCE.md for blocked metrics and second-apply placement checks.
+GET-by-id placements live in `definition.widgets[].widgetId` (not a LIST integer count).
+See RUNTIME_ACCEPTANCE.md for blocked metrics, the 9d5390b duplicate cleanup plan, and second-apply checks.
 
 ### Verify Dashboard Contents
 
@@ -130,10 +132,11 @@ npx @langfuse/cli@1.3.1 api scores list --limit 10 \
 
 ### Score Metadata
 Each score should have:
-- `metadata.outcome`: Detailed outcome
-- `metadata.exit_code`: Command exit code (if run)
-- `metadata.duration_ms`: Execution time
-- `metadata.workflow_run_id`: For correlation
+- `metadata.score_scope`: `workflow-objective-checks`
+- `metadata.attached_to`: `final-completed-step-trace` (not a workflow-root trace)
+- `metadata.workflow.run_id`: Native workflow id
+- `metadata.git.sha` / `metadata.check.git.sha`: ingest vs check provenance
+- `metadata.exit_code` / `metadata.duration_ms`: Execution details when present
 
 ### Deduplication Test
 Run the same workflow again - scores should NOT be duplicated.

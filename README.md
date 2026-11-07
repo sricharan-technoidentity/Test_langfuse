@@ -7,8 +7,8 @@ Local-first Langfuse integration for Kiro IDE workflow tracing, dashboards, and 
 | Task | Description | Status |
 |------|-------------|--------|
 | Task 1 | Enrich tracing metadata | Code complete; live ingest proven on parent for wf_7482 (old identity). Future runs: `kiro-test-runner` / `demo-engineering` / `identity_type=automation` |
-| Task 2 | Native Langfuse dashboards | Provisioner uses documented unstable widget schema. Observation widgets are **not** workflow-run counts. Several requested metrics are **blocked** (see RUNTIME_ACCEPTANCE.md) |
-| Task 3 | Objective scores | Explicit `finalize_workflow.py` after native terminal state. Scores attach to a 32-hex **step** trace. Submit+v3 readback must be proven on the parent box |
+| Task 2 | Native Langfuse dashboards | Provisioner uses GET `definition.widgets` + `widgetId` (LIST `placements` is a count). Observation widgets are **not** workflow-run counts. Failed 9d5390b apply duplicated tiles; cleanup plan is parent-only (original 6/13 survive). Several requested metrics are **blocked** (see RUNTIME_ACCEPTANCE.md) |
+| Task 3 | Objective scores | Explicit `finalize_workflow.py` after native terminal state. Scores attach to a 32-hex **final-step** trace (not a workflow-root). Association uses observations v2 metadata. Historical `5706b066` cannot receive later-SHA checks. Fresh native run at this HEAD required for score acceptance. |
 
 ## Quick Start
 

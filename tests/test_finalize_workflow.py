@@ -31,6 +31,12 @@ from finalize_workflow import (
     is_valid_otel_trace_id,
     incomplete_steps,
     native_wall_ms,
+    observations_link_to_workflow,
+    evaluate_provenance_gate,
+    git_sha_equivalent,
+    flatten_obs_metadata,
+    SCORE_SCOPE,
+    SCORE_ATTACHED_TO,
 )
 
 
@@ -595,36 +601,39 @@ class TestTraceIdDiscovery:
             "session_id": "sess_parent",
             "trace_id": "b5ff64627d58a8d18bb15f2b0675a1ff",
         }))
-        tid, source = discover_trace_id_for_score(str(tmp_path), wf.workflow_id, wf)
-        assert tid == "8bf382ae53767f200a24212647e28d3d"
-        assert "summarize" in source
-        assert tid != wf.workflow_id
-        assert tid != "b5ff64627d58a8d18bb15f2b0675a1ff"
+        assoc = discover_trace_id_for_score(str(tmp_path), wf.workflow_id, wf)
+        assert assoc.trace_id == "8bf382ae53767f200a24212647e28d3d"
+        assert "summarize" in assoc.source
+        assert assoc.trace_id != wf.workflow_id
+        assert assoc.trace_id != "b5ff64627d58a8d18bb15f2b0675a1ff"
+        assert assoc.not_workflow_root_trace is True
+        assert assoc.score_scope == SCORE_SCOPE
+        assert assoc.attached_to == SCORE_ATTACHED_TO
 
     def test_refuses_missing_state(self, tmp_path: Path):
         wf = self._wf(tmp_path)
-        tid, source = discover_trace_id_for_score(str(tmp_path), wf.workflow_id, wf)
-        assert tid is None
-        assert "wf_" not in (tid or "")
-        assert "No ingested" in source or "No langfuse-state" in source or "step" in source.lower()
+        assoc = discover_trace_id_for_score(str(tmp_path), wf.workflow_id, wf)
+        assert assoc.trace_id is None
+        assert "wf_" not in (assoc.trace_id or "")
+        assert "No ingested" in assoc.source or "No langfuse-state" in assoc.source or "step" in assoc.source.lower()
 
     def test_explicit_wf_id_rejected(self, tmp_path: Path):
         wf = self._wf(tmp_path)
-        tid, source = discover_trace_id_for_score(
+        assoc = discover_trace_id_for_score(
             str(tmp_path), wf.workflow_id, wf, explicit_trace_id="wf_7482ba1888446d73"
         )
-        assert tid is None
-        assert "32-hex" in source or "Invalid" in source
+        assert assoc.trace_id is None
+        assert "32-hex" in assoc.source or "Invalid" in assoc.source
 
     def test_explicit_unassociated_hex_rejected(self, tmp_path: Path):
         wf = self._wf(tmp_path)
         self._write_session_state(tmp_path, "sess_summarize", "8bf382ae53767f200a24212647e28d3d")
-        tid, source = discover_trace_id_for_score(
+        assoc = discover_trace_id_for_score(
             str(tmp_path), wf.workflow_id, wf,
             explicit_trace_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
-        assert tid is None
-        assert "not associated" in source
+        assert assoc.trace_id is None
+        assert "not associated" in assoc.source
 
     def test_explicit_parent_trace_rejected(self, tmp_path: Path):
         wf = self._wf(tmp_path)
@@ -638,9 +647,119 @@ class TestTraceIdDiscovery:
             "session_id": "sess_summarize",
             "trace_id": "8bf382ae53767f200a24212647e28d3d",
         }))
-        tid, source = discover_trace_id_for_score(
+        assoc = discover_trace_id_for_score(
             str(tmp_path), wf.workflow_id, wf,
             explicit_trace_id="b5ff64627d58a8d18bb15f2b0675a1ff",
         )
-        assert tid is None
-        assert "not associated" in source or "parent" in source.lower()
+        assert assoc.trace_id is None
+        assert "not associated" in assoc.source or "parent" in assoc.source.lower()
+
+
+def _summarize_obs(n: int = 6, git_sha: str = "5706b0662db599dce44e04daf890161785c4192c") -> list[dict]:
+    """SYNTHETIC observations-v2 rows modeled on live summarize trace 8bf382ae (6 obs)."""
+    rows = []
+    for i in range(n):
+        rows.append({
+            "id": f"obs-{i}",
+            "traceId": "8bf382ae53767f200a24212647e28d3d",
+            "type": "SPAN" if i else "GENERATION",
+            "name": "summarize" if i == 0 else f"tool-{i}",
+            "sessionId": "test-langfuse-local-validation",
+            "metadata": {
+                "workflow.run_id": "wf_7482ba1888446d73",
+                "workflow.step_id": "summarize",
+                "workflow.step_session_id": "sess_summarize",
+                "kiro.session_id": "sess_summarize",
+                "git.sha": git_sha,
+            },
+        })
+    return rows
+
+
+class TestObservationsV2Association:
+    """Live fail: explicit 8bf382ae rejected because local session files were missing."""
+
+    def test_flatten_dict_and_nested(self):
+        assert flatten_obs_metadata({"workflow.run_id": "wf_x"})["workflow.run_id"] == "wf_x"
+        nested = flatten_obs_metadata({"workflow": {"run_id": "wf_x", "step_id": "summarize"}})
+        assert nested["workflow.run_id"] == "wf_x"
+        assert nested["workflow.step_id"] == "summarize"
+
+    def test_explicit_trace_associated_via_observations_without_local_state(self, tmp_path: Path):
+        wf = TestTraceIdDiscovery()._wf(tmp_path)
+        obs = _summarize_obs()
+        assoc = discover_trace_id_for_score(
+            str(tmp_path), wf.workflow_id, wf,
+            explicit_trace_id="8bf382ae53767f200a24212647e28d3d",
+            observations_for_trace=lambda _tid: obs,
+        )
+        assert assoc.trace_id == "8bf382ae53767f200a24212647e28d3d"
+        assert assoc.observation_count == 6
+        assert assoc.step_id == "summarize"
+        assert assoc.git_sha == "5706b0662db599dce44e04daf890161785c4192c"
+        assert assoc.not_workflow_root_trace is True
+        assert assoc.association_method == "explicit-observations-v2"
+        assert assoc.trace_id != wf.workflow_id
+
+    def test_metadata_absent_cannot_associate(self, tmp_path: Path):
+        wf = TestTraceIdDiscovery()._wf(tmp_path)
+        obs = [{"id": "o1", "traceId": "8bf382ae53767f200a24212647e28d3d"} for _ in range(6)]
+        ok, reason, _details = observations_link_to_workflow(obs, wf)
+        assert ok is False
+        assert "metadata" in reason.lower()
+        assoc = discover_trace_id_for_score(
+            str(tmp_path), wf.workflow_id, wf,
+            explicit_trace_id="8bf382ae53767f200a24212647e28d3d",
+            observations_for_trace=lambda _tid: obs,
+        )
+        assert assoc.trace_id is None
+
+    def test_wrong_run_id_rejected(self, tmp_path: Path):
+        wf = TestTraceIdDiscovery()._wf(tmp_path)
+        obs = _summarize_obs()
+        for row in obs:
+            row["metadata"]["workflow.run_id"] = "wf_other"
+        assoc = discover_trace_id_for_score(
+            str(tmp_path), wf.workflow_id, wf,
+            explicit_trace_id="8bf382ae53767f200a24212647e28d3d",
+            observations_for_trace=lambda _tid: obs,
+        )
+        assert assoc.trace_id is None
+        assert "not associated" in assoc.source
+
+    def test_auto_discover_last_step_via_run_id_filter(self, tmp_path: Path):
+        wf = TestTraceIdDiscovery()._wf(tmp_path)
+        assoc = discover_trace_id_for_score(
+            str(tmp_path), wf.workflow_id, wf,
+            observations_for_run=lambda _rid: _summarize_obs(),
+        )
+        assert assoc.trace_id == "8bf382ae53767f200a24212647e28d3d"
+        assert assoc.step_id == "summarize"
+        assert assoc.association_method == "observations-v2-run-id"
+
+
+class TestProvenanceGate:
+    HISTORICAL = "5706b0662db599dce44e04daf890161785c4192c"
+    TODAY = "9d5390ba49a43b65cd0aa17a7fc9d2fbd50e0d47"
+
+    def test_historical_sha_cannot_receive_todays_checks(self):
+        gate = evaluate_provenance_gate(self.TODAY, self.HISTORICAL)
+        assert gate.ok is False
+        assert "5706b066" in gate.reason
+        assert "9d5390b" in gate.reason.lower() or "9d5390ba" in gate.reason
+
+    def test_matching_sha_allows(self):
+        gate = evaluate_provenance_gate(self.TODAY, self.TODAY)
+        assert gate.ok is True
+
+    def test_abbreviation_of_same_commit_allows(self):
+        gate = evaluate_provenance_gate(self.TODAY, "9d5390ba")
+        assert gate.ok is True
+
+    def test_missing_trace_sha_refuses(self):
+        gate = evaluate_provenance_gate(self.TODAY, None)
+        assert gate.ok is False
+
+    def test_git_sha_equivalent(self):
+        assert git_sha_equivalent(self.TODAY, "9d5390ba49a43b65cd0aa17a7fc9d2fbd50e0d47")
+        assert not git_sha_equivalent(self.TODAY, self.HISTORICAL)

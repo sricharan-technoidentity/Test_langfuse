@@ -1,0 +1,48 @@
+{
+  "source": "evidence_d8fc.json local acceptance at 9d5390ba49a43b65cd0aa17a7fc9d2fbd50e0d47",
+  "note": "Delete ONLY placement UUIDs created by the failed 9d5390b apply (pass1+pass2). Original management 6 and engineering 13 tiles must survive. This file is a parent-box plan; the cloud VM must not mutate the local Langfuse instance.",
+  "keep_original_counts": {
+    "Kiro Management Dashboard": 6,
+    "Kiro Engineering Dashboard": 13
+  },
+  "dashboards": [
+    {
+      "name": "Kiro Management Dashboard",
+      "id": "cmw56dxbi0005ps30fvhgrcjg",
+      "keep_count_after": 6,
+      "delete_placement_ids": [
+        "f382efd6-9be7-4ddc-b051-2331c68b6a6e",
+        "fe1a4ef9-977c-4122-942d-5f3497ecb5d8",
+        "1e55888b-5c94-46c6-b1ae-421e0ddfc077",
+        "15124732-09e0-42d5-a318-0843f7a02da5",
+        "9531c402-6457-421c-842b-86fb1e0ebe04",
+        "5f200eac-f6f1-4ee3-ae90-90d88cb35ebf",
+        "0c340079-379c-43c8-a67f-4ce167593b04",
+        "3dd07656-1db4-41c5-93e4-e5f76c875c3c",
+        "cf5b23b1-f188-4236-ac5a-5b1e6909932a",
+        "c6edca8d-c7fa-49f8-aa82-e2c489aa5bbe",
+        "6224b5b2-2ccd-4e3e-a2c5-a063127ebb3f",
+        "c0be86da-0f78-43a2-92b4-dd2cb586dedf"
+      ]
+    },
+    {
+      "name": "Kiro Engineering Dashboard",
+      "id": "cmw56dypz000jps309d0rfh58",
+      "keep_count_after": 13,
+      "delete_placement_ids": [
+        "398393c3-8891-4017-8aa2-3bdc3abfa6dd",
+        "37a37dde-7fc3-4b87-b0c9-1d80e302f542",
+        "af44431b-c496-449e-8bb8-2fc7dd6c4ddd",
+        "6ddf296b-383e-4fcd-a8aa-08c3872fc758",
+        "248e21c7-d9c9-4b31-b06e-4c8566019f5b",
+        "cf3b4ea5-b630-4975-9ee4-1987264795eb",
+        "014f68c2-0ba4-4062-83cf-18953262692a",
+        "23057571-9233-47c9-9f72-634dfc703327",
+        "46abb841-29f1-4109-b590-24192a6540ca",
+        "dd494ad2-558c-4169-8119-162f2914d8b6",
+        "286f8797-2c7f-43c2-9a8f-f4005ce35dbb",
+        "707a137c-b2fd-4f49-aecb-4cfedf5e3fce"
+      ]
+    }
+  ]
+}
