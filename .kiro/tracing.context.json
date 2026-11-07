@@ -1,9 +1,0 @@
-{
-  "user_id": "kiro-test-runner",
-  "team": "demo-engineering",
-  "identity_type": "automation",
-  "workspace_key": "kiro-local-workflow-demo",
-  "repo": null,
-  "git_sha": null,
-  "notes": "FUTURE native runs only. Demo automation identity — not a human engineer and not a real company team. Existing wf_7482ba1888446d73 remains chomu-local/no-team; do not rewrite history. Never infer user from OS/email."
-}

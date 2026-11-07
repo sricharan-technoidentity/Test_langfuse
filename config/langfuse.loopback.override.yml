@@ -1,0 +1,12 @@
+# Bind Langfuse web UI to loopback only.
+# Use with the official langfuse/langfuse docker-compose.yml (tag v4.76.0):
+#   docker compose -f docker-compose.yml -f config/langfuse.loopback.override.yml up -d
+#
+# Does not delete volumes. Does not publish the UI on 0.0.0.0.
+# Compose merges port lists; if the official file also publishes 3000:3000 on all
+# interfaces, edit that host mapping in YOUR checkout to 127.0.0.1:3000:3000
+# (this override cannot always remove an upstream public bind).
+services:
+  langfuse-web:
+    ports:
+      - "127.0.0.1:3000:3000"

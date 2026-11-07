@@ -1,10 +1,10 @@
 {
-  "user_id": "kiro-test-runner",
-  "team": "demo-engineering",
+  "user_id": "local-runner",
+  "team": "local-team-label",
   "identity_type": "automation",
-  "automation_user_ids": ["kiro-test-runner", "chomu-local"],
-  "workspace_key": "my-shared-workspace-id",
+  "automation_user_ids": [],
+  "workspace_key": "my-local-workspace",
   "repo": null,
   "git_sha": null,
-  "notes": "identity_type=automation|human is the primary adoption lever. kiro-test-runner and chomu-local are always treated as automation even if identity_type is omitted. demo-engineering is a demo label, not a real org team. Never infer user from OS/email. Leave team/repo/git_sha null when unknown."
+  "notes": "Copy this file to .kiro/tracing.context.json (gitignored). identity_type=automation tags traces kiro-automation. These values are local labels, not a company team and not a previous run's identity. Never infer user from OS/email. Leave team/repo/git_sha null when unknown."
 }

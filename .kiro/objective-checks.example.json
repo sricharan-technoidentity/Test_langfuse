@@ -1,31 +1,18 @@
 {
-  "build": {
-    "command": "python -m py_compile sample/checkout_helper.py",
-    "timeout": 120,
+  "build_pass": {
+    "command": ["python3", "-m", "py_compile", "sample/checkout_helper.py"],
+    "timeout_seconds": 30,
     "enabled": true,
-    "_comment": "Syntax check for Python files. Replace with your build command."
+    "_comment": "Syntax compile only — this repo has no package build."
   },
-  "test": {
-    "command": "python -m pytest tests/ -v --tb=short",
-    "timeout": 300,
-    "enabled": true,
-    "_comment": "Run pytest. Replace with your test command."
+  "test_pass": {
+    "command": ["python3", "-m", "pytest", "tests/", "-q"],
+    "timeout_seconds": 120,
+    "enabled": true
   },
-  "lint": {
-    "command": "python -m ruff check .kiro/hooks/ sample/ --select=E,F",
-    "timeout": 60,
-    "enabled": true,
-    "_comment": "Run ruff linter. Replace with your lint command."
-  },
-  "_documentation": {
-    "purpose": "Task3 objective end-of-workflow scores for build/test/lint",
-    "outcomes": ["pass", "fail", "not_configured", "skipped", "timeout", "error"],
-    "usage": "Copy to .kiro/objective-checks.json and customize commands",
-    "notes": [
-      "Commands run only at workflow end, never automatically on workspace open",
-      "Timeout in seconds; command killed if exceeded",
-      "Set enabled: false to skip a check",
-      "Output is truncated and secrets redacted before storing"
-    ]
+  "lint_clean": {
+    "command": ["python3", "-m", "ruff", "check", ".kiro/hooks/", "tests/", "--select=E,F,W", "--ignore=E501,W293"],
+    "timeout_seconds": 60,
+    "enabled": true
   }
 }

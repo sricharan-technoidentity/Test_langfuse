@@ -26,17 +26,11 @@ jobs:
           git config --global user.email "ci@test.local"
           git config --global user.name "CI Test"
 
-      - name: Run Task1 tracing context tests
-        run: python3 tests/test_tracing_context.py -v
+      - name: Install test dependencies
+        run: pip install -r requirements.txt
 
-      - name: Run Task2 dashboard config tests
-        run: python3 tests/test_dashboard_config.py -v
-
-      - name: Run Task3 objective scores tests
-        run: python3 tests/test_objective_scores.py -v
-
-      - name: Run Task3 langfuse scores tests
-        run: python3 tests/test_langfuse_scores.py -v
+      - name: Run unit tests
+        run: python3 -m pytest tests/ -q
 
   lint:
     runs-on: ubuntu-latest
@@ -65,18 +59,17 @@ jobs:
           python3 -c "
           import json
           from pathlib import Path
-          
+          skip = {'.git', '.venv', 'node_modules', '__pycache__'}
           errors = []
           for p in Path('.').rglob('*.json'):
-              if '.git' in str(p):
+              if any(part in skip for part in p.parts):
                   continue
               try:
                   json.loads(p.read_text())
-                  print(f'✓ {p}')
+                  print(f'ok {p}')
               except json.JSONDecodeError as e:
                   errors.append(f'{p}: {e}')
-                  print(f'✗ {p}: {e}')
-          
+                  print(f'fail {p}: {e}')
           if errors:
               raise SystemExit(1)
           "

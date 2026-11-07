@@ -1,6 +1,8 @@
 {
-  "source": "evidence_d8fc.json local acceptance at 9d5390ba49a43b65cd0aa17a7fc9d2fbd50e0d47",
-  "note": "Delete ONLY placement UUIDs created by the failed 9d5390b apply (pass1+pass2). Original management 6 and engineering 13 tiles must survive. This file is a parent-box plan; the cloud VM must not mutate the local Langfuse instance.",
+  "fixture": true,
+  "not_user_defaults": true,
+  "source": "FIXTURE copied from a host-specific failed-acceptance plan (9d5390b). Dashboard and placement IDs here are NOT your project defaults.",
+  "note": "FIXTURE: delete ONLY listed placement UUIDs from that failed apply. Original management 6 and engineering 13 tiles on that host were required to survive. Do not run this against a new clone's Langfuse unless those IDs exist on your instance.",
   "keep_original_counts": {
     "Kiro Management Dashboard": 6,
     "Kiro Engineering Dashboard": 13

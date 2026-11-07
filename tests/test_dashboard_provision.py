@@ -519,8 +519,10 @@ class TestFailedAcceptanceCleanupPlan:
 
     def test_bundled_plan_file_has_24_failed_ids_and_keep_counts(self):
         plan = load_cleanup_plan(
-            str(Path(__file__).parent.parent / ".kiro" / "hooks" / "failed-acceptance-placements-9d5390b.json")
+            str(Path(__file__).parent / "fixtures" / "failed-acceptance-placements.fixture.json")
         )
+        assert plan.get("fixture") is True
+        assert plan.get("not_user_defaults") is True
         mgmt = next(d for d in plan["dashboards"] if "Management" in d["name"])
         eng = next(d for d in plan["dashboards"] if "Engineering" in d["name"])
         assert mgmt["keep_count_after"] == 6

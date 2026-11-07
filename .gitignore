@@ -4,6 +4,11 @@
 .kiro/langfuse.local.env
 .kiro/langfuse.env
 langfuse.env
+.venv/
+venv/
+
+# User tracing identity (copy from .kiro/tracing.context.example.json)
+.kiro/tracing.context.json
 
 # Hook state and claims (runtime artifacts)
 .kiro/langfuse-state-local/
