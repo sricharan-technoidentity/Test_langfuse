@@ -34,6 +34,7 @@ from tracing_context import (  # noqa: E402
     discover_git,
     load_tracing_context,
     normalize_field,
+    resolve_identity_type,
     resolve_workflow,
     resolve_workspace,
     extract_kiro_workflow_meta,
@@ -693,6 +694,48 @@ class GitIntegrationWithEnrichmentTests(unittest.TestCase):
             self.assertEqual(enr["metadata"]["repo"], "testorg/testrepo")
             self.assertEqual(enr["metadata"]["repo.provenance"], "git-remote-origin")
             self.assertNotIn("repo", enr["missing_fields"])
+
+
+class IdentityTypeTests(unittest.TestCase):
+    """Demo runner identities are automation, not human engineers."""
+
+    def test_kiro_test_runner_is_automation_even_without_identity_type(self):
+        self.assertEqual(
+            resolve_identity_type({"user_id": "kiro-test-runner"}),
+            "automation",
+        )
+
+    def test_chomu_local_is_automation(self):
+        self.assertEqual(resolve_identity_type({"user_id": "chomu-local"}), "automation")
+
+    def test_explicit_human_not_assumed_from_named_user(self):
+        self.assertEqual(resolve_identity_type({"user_id": "alice"}), "unknown")
+
+    def test_explicit_identity_type_wins(self):
+        self.assertEqual(
+            resolve_identity_type({"user_id": "alice", "identity_type": "human"}),
+            "human",
+        )
+
+    def test_enrichment_tags_automation_for_demo_runner(self):
+        with tempfile.TemporaryDirectory() as td:
+            kiro = Path(td) / ".kiro"
+            kiro.mkdir()
+            (kiro / "tracing.context.json").write_text(
+                json.dumps({
+                    "user_id": "kiro-test-runner",
+                    "team": "demo-engineering",
+                    "identity_type": "automation",
+                    "workspace_key": "demo-ws",
+                })
+            )
+            enr = build_enrichment(td, "sess", {"title": "Chat", "agentMode": "vibe"})
+            self.assertEqual(enr["identity_type"], "automation")
+            self.assertIn("kiro-automation", enr["tags"])
+            self.assertNotIn("kiro-human", enr["tags"])
+            self.assertEqual(enr["metadata"]["identity.human_engineer"], "false")
+            self.assertEqual(enr["langfuse_user_id"], "kiro-test-runner")
+            self.assertEqual(enr["values"]["team"], "demo-engineering")
 
 
 if __name__ == "__main__":

@@ -167,7 +167,7 @@ def management_widgets() -> list[WidgetDefinition]:
         # Weekly Active Users (exclude automation users by tag)
         WidgetDefinition(
             name="Weekly Active Engineers",
-            description="Distinct users running workflows (excludes automation/chomu-local)",
+            description="DESIRED (blocked on unstable widget API): distinct human users. Exclude kiro-automation tag, not a hardcoded username. kiro-test-runner is automation.",
             data_source=DataSource.TRACES,
             chart_type=ChartType.LINE,
             metric="userId",
@@ -175,7 +175,7 @@ def management_widgets() -> list[WidgetDefinition]:
             breakdown_dimension=None,
             filters=[
                 WidgetFilter("tags", "contains", "kiro-workflow-step"),
-                WidgetFilter("userId", "not_equals", "chomu-local"),
+                WidgetFilter("tags", "not_contains", "kiro-automation"),
                 WidgetFilter("userId", "is_not_null", True),
             ],
         ),
@@ -628,10 +628,10 @@ stop due to error, abort, or timeout. The actual outcome depends on
 stop_reason metadata.
 
 ## User Exclusion for Adoption
-- Automation users (user_id like "chomu-local", "*-automation", "*-bot") are
-  excluded from adoption metrics by default
-- Unknown/missing users are counted separately
-- Real human users must have explicit user_id in tracing.context.json
+- Use identity_type=automation and tag kiro-automation (kiro-test-runner, chomu-local)
+- Do not hardcode a single username as the only exclusion
+- Named users are NOT assumed human; identity_type=human is required
+- demo-engineering is a demo label, not a real company team / multi-user rollout
 
 ## Tool Latency Caveat
 In prior Kiro hooks, tool start and end timestamps are often equal (no genuine

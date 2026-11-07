@@ -152,16 +152,14 @@ class TestManagementWidgets(unittest.TestCase):
         self.assertIn("Top Workflows by Usage", names)
     
     def test_automation_exclusion_filter(self):
-        """Verify automation users are excluded from adoption metrics."""
+        """Adoption exclusion is identity-tag based, not a hardcoded username."""
         widgets = management_widgets()
         active_users = next(w for w in widgets if "Active Engineers" in w.name)
-        
-        # Should have filter to exclude chomu-local
-        filter_columns = [f.column for f in active_users.filters]
+
         filter_values = [f.value for f in active_users.filters]
-        
-        self.assertIn("userId", filter_columns)
-        self.assertIn("chomu-local", filter_values)
+        self.assertIn("kiro-automation", filter_values)
+        self.assertNotIn("chomu-local", filter_values)
+        self.assertNotIn("kiro-test-runner", filter_values)
     
     def test_workflow_run_dedup(self):
         """Verify workflow runs use run_id for deduplication."""

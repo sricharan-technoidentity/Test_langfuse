@@ -6,9 +6,9 @@ Local-first Langfuse integration for Kiro IDE workflow tracing, dashboards, and 
 
 | Task | Description | Status |
 |------|-------------|--------|
-| Task 1 | Enrich tracing metadata | ✅ Implemented |
-| Task 2 | Build dashboards in Langfuse | ✅ Configs ready (see API note) |
-| Task 3 | Add objective scores | ✅ Implemented |
+| Task 1 | Enrich tracing metadata | Code complete; live ingest proven on parent for wf_7482 (old identity). Future runs: `kiro-test-runner` / `demo-engineering` / `identity_type=automation` |
+| Task 2 | Native Langfuse dashboards | Provisioner uses documented unstable widget schema. Observation widgets are **not** workflow-run counts. Several requested metrics are **blocked** (see RUNTIME_ACCEPTANCE.md) |
+| Task 3 | Objective scores | Explicit `finalize_workflow.py` after native terminal state. Scores attach to a 32-hex **step** trace. Submit+v3 readback must be proven on the parent box |
 
 ## Quick Start
 
@@ -100,66 +100,30 @@ When required fields are absent, traces are:
 
 ## Task 2: Langfuse Dashboards
 
-### Dashboard Definitions
+Provision via documented unstable API (not drag-drop of guessed JSON):
 
-Two dashboards are defined in `.kiro/dashboards/`:
-
-**Management Dashboard** (`management-dashboard.json`):
-- Weekly active engineers (excludes automation users)
-- Workflow runs per week (deduplicated by run_id)
-- Completion rate (completed/aborted/error/running)
-- Adoption by team/repo
-- Top workflows by usage
-- Average duration per workflow
-
-**Engineering Dashboard** (`engineering-dashboard.json`):
-- Completion by workflow + version
-- Tool error rate by tool
-- Tool latency p50/p95 (shows 0 when no genuine timing)
-- Tool calls per workflow run
-- Failed traces for drill-down
-- Objective check pass rates (Task3)
-
-### Dashboard API Status
-
-Langfuse v4.76.0 has **unstable** dashboard API at `/api/public/unstable/*`.
-
-**If API available:**
 ```bash
-# Check availability
-curl -u "pk-lf-...":"sk-lf-..." \
-  http://localhost:3000/api/public/unstable/dashboards?limit=1
-
-# Provision programmatically (when API is ready)
-python3 -c "
-from pathlib import Path
-import sys
-sys.path.insert(0, '.kiro/hooks')
-from dashboard_config import provision_dashboards
-
-result = provision_dashboards(
-    base_url='http://localhost:3000',
-    public_key='pk-lf-...',
-    secret_key='sk-lf-...',
-    dry_run=True,  # Set False to actually create
-)
-print(result)
-"
+python3 .kiro/hooks/dashboard_provision.py --dry-run --json
+python3 .kiro/hooks/dashboard_provision.py --json
 ```
 
-**If API unavailable:**
-1. Export JSON configs (already in `.kiro/dashboards/`)
-2. Import via Langfuse UI: Dashboards → drag-drop JSON file
-3. Or use MCP tools / Halo assistant
+Schema citations: `npx langfuse-cli api unstable-dashboard-widgets create --help` and
+https://langfuse.com/docs/metrics/features/metrics-api.md — views are `observations`,
+`scores-numeric`, `scores-boolean`, `scores-categorical`. Legacy `traces` view is not
+supported for new widgets. Only `PIVOT_TABLE` may use multiple dimensions.
 
-### Design Decisions
+**Shipped widgets count observations (or boolean scores), not uniq(workflow.run_id).**
+One native two-step run produced 14 observations / 3 traces. Hung parent latency is
+not workflow duration.
 
-- **Run deduplication**: Uses `metadata.workflow.run_id` with COUNT_DISTINCT
-- **No double-counting**: Filters to `kiro-workflow-step` tag only
-- **Automation excluded**: `userId != "chomu-local"` filter
-- **Unknown team separate**: Null/missing team shown as separate category
-- **Tool latency caveat**: Shows 0 when start==end (documented, not hidden)
-- **Stop ≠ success**: Stop hook doesn't guarantee workflow success
+**Blocked (not faked):** distinct workflow runs, distinct human engineers, native
+completion rate, native duration, true per-tool latency, team/repo unique-run adoption.
+
+Automation exclusion for *future* traces is the `kiro-automation` tag from
+`identity_type` / known runner ids (`kiro-test-runner`, `chomu-local`) — not a
+hardcoded single username in the widget API.
+
+See `RUNTIME_ACCEPTANCE.md`.
 
 ---
 

@@ -68,21 +68,21 @@ curl -u "pk-lf-...":"sk-lf-..." \
 **If 200**: API available, can provision programmatically
 **If 404**: Use JSON import via UI
 
-### Import Dashboards (UI Method)
-1. Open Langfuse UI → Dashboards
-2. Drag-drop `.kiro/dashboards/management-dashboard.json`
-3. Drag-drop `.kiro/dashboards/engineering-dashboard.json`
+### Provision dashboards (documented unstable API)
+
+```bash
+python3 .kiro/hooks/dashboard_provision.py --json
+```
+
+Do not drag-drop guessed JSON. Observation widgets are not workflow-run counts.
+See RUNTIME_ACCEPTANCE.md for blocked metrics and second-apply placement checks.
 
 ### Verify Dashboard Contents
 
-**Management Dashboard should show:**
-- [ ] Weekly Active Engineers (excludes automation)
-- [ ] Workflow Runs Per Week (deduplicated)
-- [ ] Completion Rate by Status
-- [ ] Adoption by Team
-- [ ] Adoption by Repository
-- [ ] Top Workflows by Usage
-- [ ] Average Duration by Workflow
+**Management Dashboard should show (observation/cost volume — not uniq workflow runs):**
+- [ ] Observation Volume (labeled as not workflow-run count)
+- [ ] Observations by Type
+- [ ] Total Cost Trend / Cost by Model / Token Usage / Volume by Environment
 
 **Engineering Dashboard should show:**
 - [ ] Completion by Workflow Version

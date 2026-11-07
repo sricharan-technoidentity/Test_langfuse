@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / ".kiro" / "hooks"))
 from finalize_workflow import (
     WorkflowState,
+    WorkflowStep,
     WorkflowStatus,
     ScoreOutcome,
     CheckConfig,
@@ -26,25 +27,50 @@ from finalize_workflow import (
     result_to_score_value,
     find_workflow_state,
     workspace_hash,
+    discover_trace_id_for_score,
+    is_valid_otel_trace_id,
+    incomplete_steps,
+    native_wall_ms,
 )
 
 
 class TestWorkflowState:
     """Test workflow state parsing and validation."""
 
-    def test_parse_completed_workflow(self, tmp_path: Path):
-        """Parse a completed two-step workflow."""
+    def test_parse_completed_workflow_native_schema(self, tmp_path: Path):
+        """Parse a completed two-step workflow using native Kiro root.children schema."""
+        # This is the ACTUAL native Kiro structure (root.children, not top-level steps[])
         state = {
             "workflowId": "wf_test123",
             "workflowName": "two-step-demo",
-            "status": "completed",
             "parentSessionId": "sess_parent",
             "workspacePath": str(tmp_path),
             "createdAt": "2026-11-06T15:00:00Z",
-            "steps": [
-                {"nodeId": "analyze", "status": "completed", "completionSignal": None},
-                {"nodeId": "summarize", "status": "completed", "completionSignal": "success"},
-            ],
+            "root": {
+                "status": "completed",
+                "startedAt": "2026-11-06T15:00:00.100Z",
+                "endedAt": "2026-11-06T15:00:30.500Z",
+                "children": [
+                    {
+                        "nodeId": "analyze",
+                        "sessionId": "sess_analyze_123",
+                        "status": "completed",
+                        "startedAt": "2026-11-06T15:00:00.200Z",
+                        "endedAt": "2026-11-06T15:00:15.000Z",
+                        "completionSignal": None,
+                        "modelId": "claude-haiku-4.5",
+                    },
+                    {
+                        "nodeId": "summarize",
+                        "sessionId": "sess_summarize_456",
+                        "status": "completed",
+                        "startedAt": "2026-11-06T15:00:15.100Z",
+                        "endedAt": "2026-11-06T15:00:30.400Z",
+                        "completionSignal": "success",
+                        "modelId": "claude-haiku-4.5",
+                    },
+                ],
+            },
         }
         state_file = tmp_path / "workflow-state.json"
         state_file.write_text(json.dumps(state))
@@ -57,16 +83,46 @@ class TestWorkflowState:
         assert wf.is_terminal is True
         assert wf.completion_signal == "success"
         assert len(wf.steps) == 2
+        # Verify step parsing
+        assert wf.steps[0].node_id == "analyze"
+        assert wf.steps[0].session_id == "sess_analyze_123"
+        assert wf.steps[0].status == "completed"
+        assert wf.steps[1].node_id == "summarize"
+        assert wf.steps[1].completion_signal == "success"
+        # Verify timestamps from root
+        assert wf.started_at == "2026-11-06T15:00:00.100Z"
+        assert wf.ended_at == "2026-11-06T15:00:30.500Z"
+
+    def test_parse_legacy_steps_schema(self, tmp_path: Path):
+        """Fallback to top-level steps[] for older format."""
+        state = {
+            "workflowId": "wf_legacy",
+            "workflowName": "legacy-workflow",
+            "status": "completed",
+            "steps": [
+                {"nodeId": "step1", "sessionId": "s1", "status": "completed"},
+            ],
+        }
+        state_file = tmp_path / "workflow-state.json"
+        state_file.write_text(json.dumps(state))
+        
+        wf = WorkflowState.from_file(state_file)
+        
+        assert wf.workflow_id == "wf_legacy"
+        assert len(wf.steps) == 1
+        assert wf.steps[0].node_id == "step1"
 
     def test_running_workflow_not_terminal(self, tmp_path: Path):
         """Running workflow should not be terminal."""
         state = {
             "workflowId": "wf_running",
-            "status": "running",
-            "steps": [
-                {"nodeId": "step1", "status": "completed"},
-                {"nodeId": "step2", "status": "running"},
-            ],
+            "root": {
+                "status": "running",
+                "children": [
+                    {"nodeId": "step1", "sessionId": "s1", "status": "completed"},
+                    {"nodeId": "step2", "sessionId": "s2", "status": "running"},
+                ],
+            },
         }
         state_file = tmp_path / "workflow-state.json"
         state_file.write_text(json.dumps(state))
@@ -80,8 +136,7 @@ class TestWorkflowState:
         """Error workflow should be terminal."""
         state = {
             "workflowId": "wf_error",
-            "status": "error",
-            "steps": [],
+            "root": {"status": "error", "children": []},
         }
         state_file = tmp_path / "workflow-state.json"
         state_file.write_text(json.dumps(state))
@@ -118,10 +173,11 @@ class TestPrematureStopRejection:
         # Workflow is not terminal
         assert wf.is_terminal is False
         
-        # Would have pending steps
-        pending = [s for s in wf.steps if s.get("status") == "pending"]
-        assert len(pending) == 1
-        assert pending[0]["nodeId"] == "summarize"
+        # Would have pending steps (WorkflowStep objects, native or legacy fixture)
+        from finalize_workflow import incomplete_steps
+        unfinished = incomplete_steps(wf)
+        assert len(unfinished) == 1
+        assert unfinished[0].node_id == "summarize"
 
     def test_reject_when_step_still_running(self, tmp_path: Path):
         """Reject when any step is still running."""
@@ -138,8 +194,10 @@ class TestPrematureStopRejection:
         wf = WorkflowState.from_file(state_file)
         
         assert wf.is_terminal is False
-        running = [s for s in wf.steps if s.get("status") == "running"]
+        from finalize_workflow import incomplete_steps
+        running = incomplete_steps(wf)
         assert len(running) == 1
+        assert running[0].node_id == "step1"
 
 
 class TestCheckExecution:
@@ -428,3 +486,161 @@ class TestCLIEntrypoint:
         output = json.loads(result.stdout)
         assert output["checks"]["build_pass"]["outcome"] == "pass"
         assert output["scores_submitted"] == []  # No scores in dry run
+        assert output.get("trace_id") in (None, "")
+        # Must never default to the workflow id
+        assert output.get("trace_id") != "wf_dryrun"
+
+
+class TestUnknownStepStatus:
+    """Unknown child statuses are incomplete, even if root says completed."""
+
+    def test_unknown_child_status_is_incomplete(self, tmp_path: Path):
+        # SYNTHETIC fixture (not a captured native payload)
+        state = {
+            "workflowId": "wf_unknown",
+            "workflowName": "two-step-demo",
+            "root": {
+                "status": "completed",
+                "children": [
+                    {"nodeId": "analyze", "sessionId": "s1", "status": "completed"},
+                    {"nodeId": "summarize", "sessionId": "s2", "status": "mystery"},
+                ],
+            },
+        }
+        p = tmp_path / "workflow-state.json"
+        p.write_text(json.dumps(state))
+        wf = WorkflowState.from_file(p)
+        unfinished = incomplete_steps(wf)
+        assert len(unfinished) == 1
+        assert unfinished[0].node_id == "summarize"
+
+
+class TestNativeDuration:
+    def test_wall_ms_from_root_timestamps(self, tmp_path: Path):
+        # SYNTHETIC fixture
+        state = {
+            "workflowId": "wf_dur",
+            "root": {
+                "status": "completed",
+                "startedAt": "2026-11-06T16:07:40.409Z",
+                "endedAt": "2026-11-06T16:08:06.457Z",
+                "children": [{"nodeId": "a", "sessionId": "s", "status": "completed"}],
+            },
+        }
+        p = tmp_path / "workflow-state.json"
+        p.write_text(json.dumps(state))
+        wf = WorkflowState.from_file(p)
+        wall = native_wall_ms(wf)
+        assert wall is not None
+        assert 25000 <= wall <= 27000  # ~26s native wall, not hung parent 133s
+
+
+class TestTraceIdDiscovery:
+    """Scores attach to ingested 32-hex step traces, never wf_*."""
+
+    def _wf(self, tmp_path: Path) -> WorkflowState:
+        # SYNTHETIC fixture modeled on native root.children
+        state = {
+            "workflowId": "wf_7482ba1888446d73",
+            "parentSessionId": "sess_parent",
+            "workspacePath": str(tmp_path),
+            "root": {
+                "status": "completed",
+                "startedAt": "2026-11-06T16:07:40.409Z",
+                "endedAt": "2026-11-06T16:08:06.457Z",
+                "children": [
+                    {
+                        "nodeId": "analyze",
+                        "sessionId": "sess_analyze",
+                        "status": "completed",
+                    },
+                    {
+                        "nodeId": "summarize",
+                        "sessionId": "sess_summarize",
+                        "status": "completed",
+                        "completionSignal": "success",
+                    },
+                ],
+            },
+        }
+        p = tmp_path / "workflow-state.json"
+        p.write_text(json.dumps(state))
+        return WorkflowState.from_file(p)
+
+    def _write_session_state(self, tmp_path: Path, session_id: str, trace_id: str) -> None:
+        d = tmp_path / ".kiro" / "langfuse-state-local"
+        d.mkdir(parents=True)
+        (d / f"{session_id}.json").write_text(json.dumps({
+            "session_id": session_id,
+            "trace_id": trace_id,
+        }))
+
+    def test_wf_id_is_not_a_valid_trace(self):
+        assert is_valid_otel_trace_id("wf_7482ba1888446d73") is False
+        assert is_valid_otel_trace_id("189269f11c8175150f4e8f017cf0849a") is True
+
+    def test_prefers_last_completed_step_not_parent(self, tmp_path: Path):
+        wf = self._wf(tmp_path)
+        state_dir = tmp_path / ".kiro" / "langfuse-state-local"
+        state_dir.mkdir(parents=True)
+        (state_dir / "sess_analyze.json").write_text(json.dumps({
+            "session_id": "sess_analyze",
+            "trace_id": "189269f11c8175150f4e8f017cf0849a",
+        }))
+        (state_dir / "sess_summarize.json").write_text(json.dumps({
+            "session_id": "sess_summarize",
+            "trace_id": "8bf382ae53767f200a24212647e28d3d",
+        }))
+        (state_dir / "sess_parent.json").write_text(json.dumps({
+            "session_id": "sess_parent",
+            "trace_id": "b5ff64627d58a8d18bb15f2b0675a1ff",
+        }))
+        tid, source = discover_trace_id_for_score(str(tmp_path), wf.workflow_id, wf)
+        assert tid == "8bf382ae53767f200a24212647e28d3d"
+        assert "summarize" in source
+        assert tid != wf.workflow_id
+        assert tid != "b5ff64627d58a8d18bb15f2b0675a1ff"
+
+    def test_refuses_missing_state(self, tmp_path: Path):
+        wf = self._wf(tmp_path)
+        tid, source = discover_trace_id_for_score(str(tmp_path), wf.workflow_id, wf)
+        assert tid is None
+        assert "wf_" not in (tid or "")
+        assert "No ingested" in source or "No langfuse-state" in source or "step" in source.lower()
+
+    def test_explicit_wf_id_rejected(self, tmp_path: Path):
+        wf = self._wf(tmp_path)
+        tid, source = discover_trace_id_for_score(
+            str(tmp_path), wf.workflow_id, wf, explicit_trace_id="wf_7482ba1888446d73"
+        )
+        assert tid is None
+        assert "32-hex" in source or "Invalid" in source
+
+    def test_explicit_unassociated_hex_rejected(self, tmp_path: Path):
+        wf = self._wf(tmp_path)
+        self._write_session_state(tmp_path, "sess_summarize", "8bf382ae53767f200a24212647e28d3d")
+        tid, source = discover_trace_id_for_score(
+            str(tmp_path), wf.workflow_id, wf,
+            explicit_trace_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        assert tid is None
+        assert "not associated" in source
+
+    def test_explicit_parent_trace_rejected(self, tmp_path: Path):
+        wf = self._wf(tmp_path)
+        state_dir = tmp_path / ".kiro" / "langfuse-state-local"
+        state_dir.mkdir(parents=True)
+        (state_dir / "sess_parent.json").write_text(json.dumps({
+            "session_id": "sess_parent",
+            "trace_id": "b5ff64627d58a8d18bb15f2b0675a1ff",
+        }))
+        (state_dir / "sess_summarize.json").write_text(json.dumps({
+            "session_id": "sess_summarize",
+            "trace_id": "8bf382ae53767f200a24212647e28d3d",
+        }))
+        tid, source = discover_trace_id_for_score(
+            str(tmp_path), wf.workflow_id, wf,
+            explicit_trace_id="b5ff64627d58a8d18bb15f2b0675a1ff",
+        )
+        assert tid is None
+        assert "not associated" in source or "parent" in source.lower()

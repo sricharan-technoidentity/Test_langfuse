@@ -18,6 +18,8 @@ from dashboard_provision import (
     get_management_dashboard,
     get_engineering_dashboard,
     provision_dashboard,
+    validate_widget_spec,
+    extract_placed_widget_ids,
 )
 
 
@@ -294,3 +296,69 @@ class TestDryRun:
         assert result["dry_run"] is True
         assert result["dashboard_action"] == "would_create"
         assert result["widgets"][0]["action"] == "would_create"
+
+
+class TestPivotMultiDimension:
+    """Regression: VERTICAL_BAR + two dimensions returns HTTP 400."""
+
+    def test_boolean_score_rates_is_pivot(self):
+        widget = next(w for w in engineering_widgets() if w.name == "Boolean Score Rates")
+        assert widget.chart_type == "PIVOT_TABLE"
+        assert len(widget.dimensions) == 2
+        validate_widget_spec(widget)
+
+    def test_vertical_bar_multi_dim_rejected(self):
+        bad = WidgetSpec(
+            name="Boolean Score Rates",
+            description="bad",
+            view="scores-boolean",
+            chart_type="VERTICAL_BAR",
+            dimensions=[{"field": "name"}, {"field": "booleanValue"}],
+            metrics=[{"measure": "count", "agg": "sum"}],
+        )
+        try:
+            validate_widget_spec(bad)
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "PIVOT_TABLE" in str(e)
+
+    def test_all_shipped_widgets_pass_schema(self):
+        for w in management_widgets() + engineering_widgets():
+            validate_widget_spec(w)
+
+    def test_observation_volume_does_not_claim_workflow_run_count(self):
+        widget = next(w for w in management_widgets() if w.name == "Observation Volume")
+        desc = widget.description.lower()
+        assert "not native workflow-run count" in desc or "not native" in desc
+
+
+class TestPlacementIdempotency:
+    def test_extract_ids_from_nested_widget_object(self):
+        ids = extract_placed_widget_ids([
+            {"widgetId": "a"},
+            {"widget": {"id": "b"}},
+            {"widget_id": "c"},
+        ])
+        assert ids == {"a", "b", "c"}
+
+    def test_second_apply_does_not_repost_existing_placement(self):
+        spec = DashboardSpec(
+            name="Test",
+            description="",
+            widgets=[WidgetSpec(
+                name="W1", description="", view="observations",
+                chart_type="NUMBER", dimensions=[], metrics=[{"measure": "count", "agg": "sum"}]
+            )],
+        )
+        client = LangfuseClient("http://localhost:3000", "pk-test", "sk-test")
+        with mock.patch.object(client, "find_dashboard_by_name", return_value={"id": "d1", "name": "Test"}):
+            with mock.patch.object(client, "find_widget_by_name", return_value={"id": "w1", "name": "W1"}):
+                with mock.patch.object(client, "update_widget", return_value={"id": "w1"}):
+                    with mock.patch.object(
+                        client, "get_dashboard_placements",
+                        return_value=[{"widget": {"id": "w1"}}],
+                    ):
+                        with mock.patch.object(client, "add_placement") as add_pl:
+                            result = provision_dashboard(client, spec, dry_run=False)
+        add_pl.assert_not_called()
+        assert result["placements"] == []

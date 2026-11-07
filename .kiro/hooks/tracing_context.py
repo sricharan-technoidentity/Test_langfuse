@@ -24,6 +24,14 @@ REQUIRED_FIELDS = (
     "git.sha",
 )
 
+# Explicit automation identities. NEVER treat these as human engineers for adoption.
+# identity_type in tracing.context.json is the primary lever; this set is a safety net
+# for known demo/local runner accounts. Not a company directory.
+DEFAULT_AUTOMATION_USER_IDS = frozenset({
+    "chomu-local",
+    "kiro-test-runner",
+})
+
 TITLE_STEP_RE = re.compile(r"^(?P<name>[^·]+?)\s*·\s*(?P<step>.+)$")
 
 
@@ -42,6 +50,33 @@ def normalize_field(value: Any) -> str | None:
         return None
     # Keep Langfuse metadata values reasonably short (docs: ~200 chars).
     return value[:198]
+
+
+def resolve_identity_type(config: dict | None) -> str:
+    """Classify the configured identity as automation, human, or unknown.
+
+    Rules (first match wins):
+    1. tracing.context.json identity_type = automation|human (explicit)
+    2. user_id in DEFAULT_AUTOMATION_USER_IDS or config.automation_user_ids
+    3. otherwise unknown (do NOT assume a named user is a human engineer)
+
+    Demo team `demo-engineering` is a label only; it does not imply a real org team
+    or multi-user rollout. kiro-test-runner is always automation.
+    """
+    config = config or {}
+    explicit = normalize_field(config.get("identity_type"))
+    if explicit:
+        lowered = explicit.lower()
+        if lowered in {"automation", "human"}:
+            return lowered
+    user = normalize_field(config.get("user_id"))
+    extra = config.get("automation_user_ids") or []
+    extra_ids = {normalize_field(x) for x in extra if normalize_field(x)}
+    known = {u.lower() for u in DEFAULT_AUTOMATION_USER_IDS}
+    known.update(x.lower() for x in extra_ids if x)
+    if user and user.lower() in known:
+        return "automation"
+    return "unknown"
 
 
 def load_tracing_context(cwd: str | None) -> dict:
@@ -464,6 +499,7 @@ def build_enrichment(
 
     user = normalize_field(config.get("user_id"))
     team = normalize_field(config.get("team"))
+    identity_type = resolve_identity_type(config)
     repo = normalize_field(config.get("repo")) or normalize_field(git_info.get("repo"))
     repo_provenance = (
         "config.repo"
@@ -492,6 +528,12 @@ def build_enrichment(
         tags.append(f"workflow:{workflow['name']}"[:200])
     if workflow.get("is_workflow_agent"):
         tags.append("kiro-workflow-step")
+    if identity_type == "automation":
+        tags.append("kiro-automation")
+    elif identity_type == "human":
+        tags.append("kiro-human")
+    else:
+        tags.append("kiro-identity-unknown")
     if missing:
         tags.append("metadata-incomplete")
     if not workspace.get("cross_machine_ready"):
@@ -518,6 +560,8 @@ def build_enrichment(
         "workflow.native_source": workflow.get("native_source"),
         "workflow.scope_note": "run_id is native Kiro workflowId when available; step_session_id is this step only; not cross-step proof",
         "team": team,
+        "identity.type": identity_type,
+        "identity.human_engineer": "true" if identity_type == "human" else "false",
         "repo": repo,
         "repo.provenance": repo_provenance,
         "git.sha": git_sha,
@@ -539,6 +583,7 @@ def build_enrichment(
     return {
         "langfuse_session_id": workspace.get("key"),
         "langfuse_user_id": user,  # may be None — caller must not invent
+        "identity_type": identity_type,
         "tags": tags,
         "metadata": cleaned,
         "missing_fields": missing,

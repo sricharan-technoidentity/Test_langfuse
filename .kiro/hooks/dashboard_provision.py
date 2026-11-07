@@ -28,9 +28,18 @@ OBSERVATIONS VIEW MEASURES:
   timeToFirstToken, countScores
 
 NOTE: The legacy 'traces' view is NOT supported in unstable API.
-Widget-level metadata filtering (workflow.run_id, team, repo) requires custom metadata
-fields which may not be available as standard dimensions. Widgets below use available
-standard dimensions.
+Widget-level metadata filtering (workflow.run_id, team, repo) is NOT a standard
+dimension. Widgets below count OBSERVATIONS (or scores), not native workflow runs.
+Do not read observation counts as workflow-run counts. Parent-chat generation
+latency is NOT native workflow duration (use workflow-state root startedAt/endedAt).
+
+BLOCKED on public unstable widget API (documented, not faked):
+- Distinct workflow.run_id counts (custom metadata is not a widget dimension)
+- Distinct human engineers (userId is high-cardinality; kiro-test-runner is automation)
+- Native completion rate from workflow-state
+- Native workflow duration
+- True per-tool duration (Kiro tool spans often start==end → 0ms)
+- Team/repo adoption breakdowns as first-class dimensions
 """
 from __future__ import annotations
 
@@ -57,6 +66,7 @@ class WidgetSpec:
 
     def to_api_payload(self) -> dict:
         """Convert to Langfuse API request body."""
+        validate_widget_spec(self)
         return {
             "name": self.name,
             "description": self.description,
@@ -66,6 +76,22 @@ class WidgetSpec:
             "metrics": self.metrics,
             "filters": self.filters,
         }
+
+
+CHARTS_ALLOWING_MULTI_DIM = frozenset({"PIVOT_TABLE"})
+
+
+def validate_widget_spec(spec: WidgetSpec) -> None:
+    """Langfuse unstable API: only PIVOT_TABLE may have multiple dimensions.
+
+    Citation: runtime HTTP 400 'Only pivot table widgets can have multiple dimensions'
+    plus langfuse-cli `unstable-dashboard-widgets create` chartType enum.
+    """
+    if len(spec.dimensions) > 1 and spec.chart_type not in CHARTS_ALLOWING_MULTI_DIM:
+        raise ValueError(
+            f"Widget '{spec.name}': chartType {spec.chart_type} cannot have "
+            f"{len(spec.dimensions)} dimensions. Use PIVOT_TABLE."
+        )
 
 
 @dataclass
@@ -87,7 +113,7 @@ def management_widgets() -> list[WidgetSpec]:
         # Total observation count over time
         WidgetSpec(
             name="Observation Volume",
-            description="Total observations over time (all types)",
+            description="OBSERVATION count over time — not native workflow-run count. One two-step workflow typically emits many observations across parent+step traces.",
             view="observations",
             chart_type="LINE_TIME_SERIES",
             dimensions=[],  # Time series implicit
@@ -161,7 +187,7 @@ def engineering_widgets() -> list[WidgetSpec]:
         # Latency p50 over time
         WidgetSpec(
             name="Latency p50",
-            description="Median observation latency (ms)",
+            description="Median OBSERVATION latency (ms). Not native workflow duration. Hung parent-chat turns inflate this. Tool spans with start==end contribute 0ms and should be treated as missing, not fast.",
             view="observations",
             chart_type="LINE_TIME_SERIES",
             dimensions=[],
@@ -172,7 +198,7 @@ def engineering_widgets() -> list[WidgetSpec]:
         # Latency p95 over time
         WidgetSpec(
             name="Latency p95",
-            description="95th percentile observation latency (ms)",
+            description="p95 OBSERVATION latency (ms). Not native workflow wall time from workflow-state.json.",
             view="observations",
             chart_type="LINE_TIME_SERIES",
             dimensions=[],
@@ -214,11 +240,12 @@ def engineering_widgets() -> list[WidgetSpec]:
         ),
 
         # Score distribution (if scores exist)
+        # NOTE: VERTICAL_BAR only supports single dimension. Use PIVOT_TABLE for name+booleanValue breakdown.
         WidgetSpec(
             name="Boolean Score Rates",
-            description="Pass/fail rates for boolean scores",
+            description="Pass/fail rates for boolean scores (Task3 build_pass/test_pass/lint_clean)",
             view="scores-boolean",
-            chart_type="VERTICAL_BAR",
+            chart_type="PIVOT_TABLE",  # Multiple dimensions require PIVOT_TABLE
             dimensions=[{"field": "name"}, {"field": "booleanValue"}],
             metrics=[{"measure": "count", "agg": "sum"}],
             filters=[],
@@ -315,9 +342,28 @@ class LangfuseClient:
         })
 
     def get_dashboard_placements(self, dashboard_id: str) -> list[dict]:
-        """Get placements for a dashboard."""
+        """Get placements for a dashboard (top-level or definition.placements)."""
         dashboard = self._request("GET", f"/api/public/unstable/dashboards/{dashboard_id}")
-        return dashboard.get("placements", [])
+        placements = dashboard.get("placements") or []
+        definition = dashboard.get("definition") if isinstance(dashboard.get("definition"), dict) else {}
+        if not placements:
+            placements = definition.get("placements") or []
+        return placements
+
+
+def extract_placed_widget_ids(placements: list) -> set[str]:
+    """Collect widget ids already on a dashboard regardless of placement shape."""
+    ids: set[str] = set()
+    for p in placements or []:
+        if not isinstance(p, dict):
+            continue
+        wid = p.get("widgetId") or p.get("widget_id")
+        widget = p.get("widget")
+        if not wid and isinstance(widget, dict):
+            wid = widget.get("id")
+        if wid:
+            ids.add(str(wid))
+    return ids
 
 
 def provision_dashboard(
@@ -387,7 +433,7 @@ def provision_dashboard(
     if result["dashboard_id"] and not dry_run:
         try:
             existing_placements = client.get_dashboard_placements(result["dashboard_id"])
-            placed_widget_ids = {p.get("widgetId") for p in existing_placements}
+            placed_widget_ids = extract_placed_widget_ids(existing_placements)
         except Exception:
             placed_widget_ids = set()
 
@@ -416,7 +462,10 @@ def get_management_dashboard() -> DashboardSpec:
     """Get management dashboard specification."""
     return DashboardSpec(
         name="Kiro Management Dashboard",
-        description="Adoption, volume, cost metrics for AI SDLC workflows (Task2)",
+        description=(
+            "Observation/cost volume for local Kiro traces. NOT native workflow-run counts, "
+            "NOT human engineer adoption (kiro-test-runner is automation), NOT team/repo unique runs."
+        ),
         widgets=management_widgets(),
     )
 
@@ -425,7 +474,10 @@ def get_engineering_dashboard() -> DashboardSpec:
     """Get engineering dashboard specification."""
     return DashboardSpec(
         name="Kiro Engineering Dashboard",
-        description="Latency, errors, quality metrics for debugging (Task2)",
+        description=(
+            "Observation latency/level plus boolean score pivot. Tool duration is missing when "
+            "start==end. Parent-chat latency is not workflow duration."
+        ),
         widgets=engineering_widgets(),
     )
 

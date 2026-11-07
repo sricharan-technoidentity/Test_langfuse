@@ -41,10 +41,15 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
+
+OTEL_TRACE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+TERMINAL_STEP_STATUSES = frozenset({"completed", "error", "cancelled", "canceled"})
 
 
 class WorkflowStatus(str, Enum):
@@ -86,29 +91,74 @@ class CheckResult:
 
 
 @dataclass
+class WorkflowStep:
+    """Parsed native Kiro workflow step."""
+    node_id: str
+    session_id: str
+    status: str  # completed, running, pending, error
+    started_at: str | None
+    ended_at: str | None
+    completion_signal: str | None
+    model_id: str | None
+
+
+@dataclass
 class WorkflowState:
-    """Parsed native Kiro workflow state."""
+    """Parsed native Kiro workflow state.
+    
+    Native Kiro workflow-state.json structure:
+    {
+      "workflowId": "wf_xxx",
+      "workflowName": "...",
+      "status": "completed",
+      "root": {
+        "status": "completed",
+        "startedAt": "...",
+        "endedAt": "...",
+        "children": [
+          {"nodeId": "analyze", "sessionId": "...", "status": "completed", ...},
+          {"nodeId": "summarize", "sessionId": "...", "status": "completed", "completionSignal": "success", ...}
+        ]
+      }
+    }
+    
+    NOTE: Steps are in root.children, NOT top-level steps[].
+    """
     workflow_id: str
     workflow_name: str
     status: WorkflowStatus
     parent_session_id: str
     workspace_path: str
-    steps: list[dict]
+    steps: list[WorkflowStep]
     created_at: str
+    started_at: str | None
     ended_at: str | None
     completion_signal: str | None
     is_terminal: bool
+    step_trace_ids: dict[str, str]  # step_node_id -> trace_id from exported state
 
     @classmethod
     def from_file(cls, path: Path) -> "WorkflowState":
-        """Load from workflow-state.json."""
+        """Load from workflow-state.json.
+        
+        Handles native Kiro structure where steps are in root.children.
+        """
         data = json.loads(path.read_text())
+        
+        # Native Kiro uses root.children for steps, not top-level steps[]
+        root = data.get("root") if isinstance(data.get("root"), dict) else {}
+        children = _flatten_step_nodes(root.get("children") or [])
 
-        steps = data.get("steps", [])
-        final_step = steps[-1] if steps else {}
+        # Last-resort fallback for older/synthetic fixtures with top-level steps[]
+        if not children and isinstance(data.get("steps"), list):
+            children = _flatten_step_nodes(data.get("steps") or [])
 
-        # Determine terminal state
-        status_str = data.get("status", "pending")
+        steps = [_parse_step_node(child) for child in children]
+        
+        final_step = steps[-1] if steps else None
+
+        # Determine terminal state from root.status or top-level status
+        status_str = root.get("status") or data.get("status", "pending")
         try:
             status = WorkflowStatus(status_str)
         except ValueError:
@@ -117,7 +167,11 @@ class WorkflowState:
         is_terminal = status in (WorkflowStatus.COMPLETED, WorkflowStatus.ERROR, WorkflowStatus.CANCELLED)
 
         # Get completion signal from final step
-        completion_signal = final_step.get("completionSignal")
+        completion_signal = final_step.completion_signal if final_step else None
+        
+        # Get timestamps from root
+        started_at = root.get("startedAt") or data.get("createdAt")
+        ended_at = root.get("endedAt")
 
         return cls(
             workflow_id=data.get("workflowId", ""),
@@ -127,10 +181,90 @@ class WorkflowState:
             workspace_path=data.get("workspacePath", ""),
             steps=steps,
             created_at=data.get("createdAt", ""),
-            ended_at=data.get("root_endedAt") or data.get("endedAt"),
+            started_at=started_at,
+            ended_at=ended_at,
             completion_signal=completion_signal,
             is_terminal=is_terminal,
+            step_trace_ids={},  # Populated separately from langfuse state
         )
+
+
+def _flatten_step_nodes(nodes: list) -> list[dict]:
+    """Flatten native root.children, including nested children.
+
+    SYNTHETIC fixtures and native captures both use dict nodes with nodeId/sessionId.
+    Nested containers are walked; non-dict entries are ignored.
+    """
+    out: list[dict] = []
+    for node in nodes or []:
+        if not isinstance(node, dict):
+            continue
+        nested = node.get("children")
+        looks_like_step = bool(node.get("nodeId") or node.get("sessionId"))
+        if looks_like_step:
+            out.append(node)
+        if isinstance(nested, list):
+            out.extend(_flatten_step_nodes(nested))
+    return out
+
+
+def _parse_step_node(child: dict) -> WorkflowStep:
+    return WorkflowStep(
+        node_id=child.get("nodeId") or child.get("id") or "",
+        session_id=child.get("sessionId") or child.get("session_id") or "",
+        status=(child.get("status") or "pending"),
+        started_at=child.get("startedAt") or child.get("started_at"),
+        ended_at=child.get("endedAt") or child.get("ended_at"),
+        completion_signal=child.get("completionSignal") or child.get("completion_signal"),
+        model_id=child.get("modelId") or child.get("model_id"),
+    )
+
+
+def is_valid_otel_trace_id(value: str | None) -> bool:
+    """True only for a 32-char lowercase/mixed hex OTEL trace id. wf_* is never valid."""
+    if not value or not isinstance(value, str):
+        return False
+    if value.startswith("wf_"):
+        return False
+    return bool(OTEL_TRACE_ID_RE.match(value.lower()))
+
+
+def parse_iso_ms(iso: str | None) -> int | None:
+    if not iso:
+        return None
+    try:
+        s = iso[:-1] + "+00:00" if iso.endswith("Z") else iso
+        return int(datetime.fromisoformat(s).timestamp() * 1000)
+    except Exception:
+        return None
+
+
+def native_wall_ms(wf: WorkflowState) -> int | None:
+    """Wall time from native root startedAt/endedAt — not parent-chat agent latency."""
+    start = parse_iso_ms(wf.started_at)
+    end = parse_iso_ms(wf.ended_at)
+    if start is None or end is None or end < start:
+        return None
+    return end - start
+
+
+def incomplete_steps(wf: WorkflowState) -> list[WorkflowStep]:
+    """Steps that are pending, running, or any unknown/non-terminal status."""
+    out = []
+    for step in wf.steps:
+        status = (step.status or "").strip().lower()
+        if status not in TERMINAL_STEP_STATUSES:
+            out.append(step)
+    return out
+
+
+def paths_equivalent(a: str | None, b: str | None) -> bool:
+    if not a or not b:
+        return True  # missing native path is not a hard mismatch
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except OSError:
+        return os.path.normpath(a) == os.path.normpath(b)
 
 
 def workspace_hash(cwd: str) -> str:
@@ -405,6 +539,140 @@ def load_finalization_state(workspace: str) -> dict:
         return {"scored_workflows": {}}
 
 
+def load_session_trace_map(workspace: str) -> dict[str, str]:
+    """Map Kiro session_id -> 32-hex OTEL trace_id from local hook state files."""
+    state_dir = Path(workspace) / ".kiro" / "langfuse-state-local"
+    skip = {
+        "finalization_state.json",
+        "objective_scores_state.json",
+        "submitted_scores.json",
+        "pending_scores.jsonl",
+    }
+    session_trace_map: dict[str, str] = {}
+    if not state_dir.exists():
+        return session_trace_map
+    try:
+        for state_file in state_dir.glob("*.json"):
+            if state_file.name in skip:
+                continue
+            try:
+                data = json.loads(state_file.read_text())
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            session_id = data.get("session_id") or state_file.stem
+            trace_id = data.get("trace_id")
+            if session_id and is_valid_otel_trace_id(trace_id):
+                session_trace_map[session_id] = trace_id.lower()
+    except OSError:
+        pass
+    return session_trace_map
+
+
+def discover_step_traces(workspace: str, wf_state: WorkflowState) -> list[dict]:
+    """Associate native step sessions with ingested 32-hex traces.
+
+    Parent chat session is excluded unless it is also a step in root.children.
+    Never invents a workflow-level trace id. Never uses wf_* as a trace id.
+    """
+    session_trace_map = load_session_trace_map(workspace)
+    step_traces = []
+    parent_id = wf_state.parent_session_id
+    for step in wf_state.steps:
+        tid = session_trace_map.get(step.session_id)
+        if not tid:
+            continue
+        step_traces.append({
+            "node_id": step.node_id,
+            "session_id": step.session_id,
+            "trace_id": tid,
+            "status": step.status,
+            "is_parent_chat": bool(parent_id) and step.session_id == parent_id,
+        })
+    return step_traces
+
+
+def discover_trace_id_for_score(
+    workspace: str,
+    workflow_id: str,
+    wf_state: WorkflowState,
+    explicit_trace_id: str | None = None,
+) -> tuple[str | None, str]:
+    """Canonical score target: last completed *step* 32-hex OTEL trace.
+
+    Never defaults to workflow_id (wf_* is not an OTEL trace).
+    Never uses hung parent-chat traces.
+    Explicit --trace-id must be 32-hex AND belong to a step of this run.
+    """
+    if workflow_id and is_valid_otel_trace_id(workflow_id):
+        pass  # theoretically possible; still must match a step
+    elif workflow_id and not explicit_trace_id:
+        # wf_* is expected and is NOT a trace id
+        pass
+
+    step_traces = discover_step_traces(workspace, wf_state)
+    step_ids = {t["trace_id"] for t in step_traces if not t.get("is_parent_chat")}
+    # If a step happens to be the parent session (unusual), still allow it as a step
+    if not step_ids:
+        step_ids = {t["trace_id"] for t in step_traces}
+
+    if explicit_trace_id:
+        candidate = explicit_trace_id.lower()
+        if not is_valid_otel_trace_id(candidate):
+            return None, (
+                f"Invalid --trace-id {explicit_trace_id!r}: must be a 32-hex OTEL trace id, "
+                "not a workflow id (wf_...)"
+            )
+        if candidate not in {t["trace_id"] for t in step_traces}:
+            return None, (
+                f"--trace-id {candidate} is not associated with any step of {workflow_id}. "
+                "Refusing dangling score submit."
+            )
+        if candidate not in step_ids:
+            return None, (
+                f"--trace-id {candidate} is the parent chat, not a workflow step of {workflow_id}"
+            )
+        matched = next(t for t in step_traces if t["trace_id"] == candidate)
+        return candidate, f"explicit --trace-id (step {matched['node_id']})"
+
+    completed_steps = [
+        t for t in step_traces
+        if (t["status"] or "").lower() == "completed" and not t.get("is_parent_chat")
+    ]
+    if completed_steps:
+        chosen = completed_steps[-1]
+        return chosen["trace_id"], f"canonical last completed step '{chosen['node_id']}'"
+
+    return None, (
+        f"No ingested 32-hex step trace for {workflow_id}. "
+        "Do not submit scores to workflow_id. Re-run after hooks export step traces, "
+        "or pass --trace-id of a verified step trace."
+    )
+
+
+def list_scores_v3(
+    base_url: str,
+    public_key: str,
+    secret_key: str,
+    trace_id: str,
+) -> list[dict]:
+    """Read back scores via documented GET /api/public/v3/scores (legacy GET /scores is 404 on v4 events_only)."""
+    qs = urllib.parse.urlencode({"traceId": trace_id, "limit": 50})
+    url = f"{base_url.rstrip('/')}/api/public/v3/scores?{qs}"
+    auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        body = json.loads(resp.read().decode())
+    if isinstance(body, dict):
+        return body.get("data") or body.get("scores") or []
+    return body if isinstance(body, list) else []
+
+
 def save_finalization_state(workspace: str, state: dict) -> None:
     """Save finalization state."""
     state_dir = Path(workspace) / ".kiro" / "langfuse-state-local"
@@ -424,6 +692,11 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Run checks but don't submit scores")
     parser.add_argument("--force", action="store_true", help="Re-run even if already scored")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
+    parser.add_argument(
+        "--verify-scores",
+        action="store_true",
+        help="After submit, GET /api/public/v3/scores?traceId=... (not legacy /api/public/scores)",
+    )
 
     # Credentials from environment (never from args - security)
     args = parser.parse_args()
@@ -463,11 +736,22 @@ def main():
         sys.exit(1)
 
     # Check for premature finalization (analyze completed but summarize not started)
-    running_steps = [s for s in wf_state.steps if s.get("status") == "running"]
-    pending_steps = [s for s in wf_state.steps if s.get("status") == "pending"]
-    if running_steps or pending_steps:
-        print(f"ERROR: Workflow has {len(running_steps)} running and {len(pending_steps)} pending steps", file=sys.stderr)
-        print("Cannot score until all steps complete.", file=sys.stderr)
+    # Also reject unknown/non-terminal child statuses even if root.status looks completed.
+    unfinished = incomplete_steps(wf_state)
+    if unfinished:
+        detail = ", ".join(f"{s.node_id}={s.status or 'unknown'}" for s in unfinished)
+        print(
+            f"ERROR: Workflow has incomplete steps ({detail}). "
+            "Cannot score until every root.children step is terminal.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if wf_state.workspace_path and not paths_equivalent(wf_state.workspace_path, workspace):
+        print(
+            f"ERROR: Native workspacePath {wf_state.workspace_path} does not match --workspace {workspace}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # Check idempotency
@@ -503,6 +787,12 @@ def main():
         "workflow_name": wf_state.workflow_name,
         "workflow_status": wf_state.status.value,
         "workspace": workspace,
+        "native_started_at": wf_state.started_at,
+        "native_ended_at": wf_state.ended_at,
+        "native_wall_ms": native_wall_ms(wf_state),
+        "native_wall_note": "Duration from native root startedAt/endedAt, not parent-chat agent latency",
+        "completion_signal": wf_state.completion_signal,
+        "step_count": len(wf_state.steps),
         "checks": {},
         "scores_submitted": [],
         "errors": [],
@@ -515,20 +805,36 @@ def main():
             "duration_ms": result.duration_ms,
         }
 
-    # Submit scores to Langfuse (if not dry run and credentials available)
-    trace_id = args.trace_id or workflow_id  # Use workflow ID as trace ID if not specified
+    # Discover trace ID for score submission
+    # CRITICAL: workflow_id is NOT a valid OTEL trace ID. Must use actual ingested trace.
+    trace_id, trace_source = discover_trace_id_for_score(
+        workspace, workflow_id, wf_state, args.trace_id
+    )
+    
+    output["trace_id"] = trace_id
+    output["trace_source"] = trace_source
 
+    if not trace_id:
+        msg = f"Cannot determine trace ID: {trace_source}"
+        if args.dry_run:
+            output["trace_warning"] = msg
+        else:
+            output["errors"].append(msg)
+    
+    # Submit scores to Langfuse (if not dry run and credentials available)
     if not args.dry_run:
         base_url = os.environ.get("LANGFUSE_BASE_URL", "http://127.0.0.1:3000")
         public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
         secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
 
-        if public_key and secret_key:
+        if not trace_id:
+            output["errors"].append("Score submission skipped: no valid trace ID")
+        elif public_key and secret_key:
             for name, result in results.items():
                 score_value = result_to_score_value(result.outcome)
                 if score_value is not None:
                     try:
-                        comment = f"{result.outcome.value} (exit={result.exit_code}, {result.duration_ms}ms)"
+                        comment = f"{result.outcome.value} (exit={result.exit_code}, {result.duration_ms}ms) workflow={workflow_id}"
                         submit_score(
                             base_url, public_key, secret_key,
                             trace_id=trace_id,
@@ -546,11 +852,21 @@ def main():
         else:
             output["errors"].append("Scores not submitted: LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY not set")
 
-    # Save finalization state
-    if not args.dry_run and not output["errors"]:
+        if args.verify_scores and trace_id and public_key and secret_key:
+            try:
+                output["scores_readback"] = list_scores_v3(base_url, public_key, secret_key, trace_id)
+            except Exception as e:
+                output["errors"].append(f"v3 scores readback failed: {e}")
+
+    # Save finalization state only after a real submit with a valid trace
+    if not args.dry_run and trace_id and output["scores_submitted"] and not any(
+        "Score submission failed" in e for e in output["errors"]
+    ):
         fin_state.setdefault("scored_workflows", {})[workflow_id] = {
             "scored_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "outcomes": {n: r.outcome.value for n, r in results.items()},
+            "trace_id": trace_id,
+            "trace_source": trace_source,
         }
         save_finalization_state(workspace, fin_state)
 

@@ -1,8 +1,10 @@
 {
-  "user_id": "alice",
-  "team": "platform",
+  "user_id": "kiro-test-runner",
+  "team": "demo-engineering",
+  "identity_type": "automation",
+  "automation_user_ids": ["kiro-test-runner", "chomu-local"],
   "workspace_key": "my-shared-workspace-id",
-  "repo": "org/my-repo",
+  "repo": null,
   "git_sha": null,
-  "notes": "workspace_key must be a stable cross-machine id, not an absolute path. Leave team/repo/git_sha null when unknown so missing_fields stays honest. user_id is never inferred from OS or email."
+  "notes": "identity_type=automation|human is the primary adoption lever. kiro-test-runner and chomu-local are always treated as automation even if identity_type is omitted. demo-engineering is a demo label, not a real org team. Never infer user from OS/email. Leave team/repo/git_sha null when unknown."
 }
