@@ -69,6 +69,13 @@ source .venv/bin/activate
 python3 -m pytest tests/ -q
 ```
 
+If `python3 -m venv` fails (missing `ensurepip` / `python3-venv`), the script **exits** and will not `apt-get` for you. Fallback:
+
+```bash
+python3 -m pip install --user -r requirements.txt
+python3 -m pytest tests/ -q
+```
+
 Unit tests are **not** live ingest/score/dashboard proof.
 
 ### 2. Loopback Langfuse (official Compose, your clone)

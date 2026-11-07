@@ -13,7 +13,15 @@ fi
 if [[ -d .venv ]]; then
   echo "reusing existing .venv (not deleted)"
 else
-  python3 -m venv .venv
+  if ! python3 -m venv .venv; then
+    echo "ERROR: python3 -m venv failed (often missing python3-venv / ensurepip)." >&2
+    echo "This script will not apt-get or brew install anything." >&2
+    echo "On Debian/Ubuntu, install python3-venv yourself, or run:" >&2
+    echo "  python3 -m pip install --user -r requirements.txt" >&2
+    echo "  python3 -m pytest tests/ -q" >&2
+    rm -rf .venv
+    exit 1
+  fi
   echo "created .venv"
 fi
 
