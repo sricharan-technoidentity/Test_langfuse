@@ -1,0 +1,62 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "langfuse-prompt-local",
+      "description": "Local Langfuse tracing with cwd-independent path resolution",
+      "trigger": "UserPromptSubmit",
+      "action": {
+        "type": "command",
+        "command": "python3 -u -c \"import sys,json,os,subprocess,tempfile; raw=sys.stdin.read(); ev=json.loads(raw); cwd=ev.get('cwd') or os.getcwd(); launcher=os.path.join(cwd,'.kiro/hooks/hook_launcher.py'); tf=tempfile.NamedTemporaryFile(mode='w',suffix='.json',delete=False); tf.write(raw); tf.close(); r=subprocess.run(['python3','-u',launcher],stdin=open(tf.name),cwd=cwd,capture_output=True,text=True,timeout=25) if os.path.isfile(launcher) else None; os.unlink(tf.name) if os.path.exists(tf.name) else None\""
+      },
+      "timeout": 30
+    },
+    {
+      "name": "langfuse-pre-tool-local",
+      "trigger": "PreToolUse",
+      "action": {
+        "type": "command",
+        "command": "python3 -u -c \"import sys,json,os,subprocess,tempfile; raw=sys.stdin.read(); ev=json.loads(raw); cwd=ev.get('cwd') or os.getcwd(); launcher=os.path.join(cwd,'.kiro/hooks/hook_launcher.py'); tf=tempfile.NamedTemporaryFile(mode='w',suffix='.json',delete=False); tf.write(raw); tf.close(); r=subprocess.run(['python3','-u',launcher],stdin=open(tf.name),cwd=cwd,capture_output=True,text=True,timeout=25) if os.path.isfile(launcher) else None; os.unlink(tf.name) if os.path.exists(tf.name) else None\""
+      },
+      "timeout": 30
+    },
+    {
+      "name": "langfuse-post-tool-local",
+      "trigger": "PostToolUse",
+      "action": {
+        "type": "command",
+        "command": "python3 -u -c \"import sys,json,os,subprocess,tempfile; raw=sys.stdin.read(); ev=json.loads(raw); cwd=ev.get('cwd') or os.getcwd(); launcher=os.path.join(cwd,'.kiro/hooks/hook_launcher.py'); tf=tempfile.NamedTemporaryFile(mode='w',suffix='.json',delete=False); tf.write(raw); tf.close(); r=subprocess.run(['python3','-u',launcher],stdin=open(tf.name),cwd=cwd,capture_output=True,text=True,timeout=25) if os.path.isfile(launcher) else None; os.unlink(tf.name) if os.path.exists(tf.name) else None\""
+      },
+      "timeout": 30
+    },
+    {
+      "name": "langfuse-stop-local",
+      "trigger": "Stop",
+      "action": {
+        "type": "command",
+        "command": "python3 -u -c \"import sys,json,os,subprocess,tempfile; raw=sys.stdin.read(); ev=json.loads(raw); cwd=ev.get('cwd') or os.getcwd(); launcher=os.path.join(cwd,'.kiro/hooks/hook_launcher.py'); tf=tempfile.NamedTemporaryFile(mode='w',suffix='.json',delete=False); tf.write(raw); tf.close(); r=subprocess.run(['python3','-u',launcher],stdin=open(tf.name),cwd=cwd,capture_output=True,text=True,timeout=25) if os.path.isfile(launcher) else None; os.unlink(tf.name) if os.path.exists(tf.name) else None\""
+      },
+      "timeout": 30
+    },
+    {
+      "name": "langfuse-pre-task-local",
+      "description": "Workflow step boundary (PreTaskExec)",
+      "trigger": "PreTaskExec",
+      "action": {
+        "type": "command",
+        "command": "python3 -u -c \"import sys,json,os,subprocess,tempfile; raw=sys.stdin.read(); ev=json.loads(raw); cwd=ev.get('cwd') or os.getcwd(); launcher=os.path.join(cwd,'.kiro/hooks/hook_launcher.py'); tf=tempfile.NamedTemporaryFile(mode='w',suffix='.json',delete=False); tf.write(raw); tf.close(); r=subprocess.run(['python3','-u',launcher],stdin=open(tf.name),cwd=cwd,capture_output=True,text=True,timeout=25) if os.path.isfile(launcher) else None; os.unlink(tf.name) if os.path.exists(tf.name) else None\""
+      },
+      "timeout": 30
+    },
+    {
+      "name": "langfuse-post-task-local",
+      "description": "Workflow step boundary (PostTaskExec)",
+      "trigger": "PostTaskExec",
+      "action": {
+        "type": "command",
+        "command": "python3 -u -c \"import sys,json,os,subprocess,tempfile; raw=sys.stdin.read(); ev=json.loads(raw); cwd=ev.get('cwd') or os.getcwd(); launcher=os.path.join(cwd,'.kiro/hooks/hook_launcher.py'); tf=tempfile.NamedTemporaryFile(mode='w',suffix='.json',delete=False); tf.write(raw); tf.close(); r=subprocess.run(['python3','-u',launcher],stdin=open(tf.name),cwd=cwd,capture_output=True,text=True,timeout=25) if os.path.isfile(launcher) else None; os.unlink(tf.name) if os.path.exists(tf.name) else None\""
+      },
+      "timeout": 30
+    }
+  ]
+}

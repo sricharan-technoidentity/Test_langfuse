@@ -1,0 +1,18 @@
+{
+  "build_pass": {
+    "command": ["python3", "-m", "py_compile", "sample/checkout_helper.py"],
+    "timeout_seconds": 30,
+    "enabled": true,
+    "_comment": "Syntax compile only — this repo has no package build."
+  },
+  "test_pass": {
+    "command": ["python3", "-m", "pytest", "tests/", "-q"],
+    "timeout_seconds": 120,
+    "enabled": true
+  },
+  "lint_clean": {
+    "command": ["python3", "-m", "ruff", "check", ".kiro/hooks/", "tests/", "--select=E,F,W", "--ignore=E501,W293"],
+    "timeout_seconds": 60,
+    "enabled": true
+  }
+}

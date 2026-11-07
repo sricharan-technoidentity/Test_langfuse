@@ -1,0 +1,82 @@
+# Environment and secrets (never commit)
+.env
+*.env
+.kiro/langfuse.local.env
+.kiro/langfuse.env
+langfuse.env
+.venv/
+venv/
+
+# User tracing identity (copy from .kiro/tracing.context.example.json)
+.kiro/tracing.context.json
+
+# Hook state and claims (runtime artifacts)
+.kiro/langfuse-state-local/
+.kiro/langfuse-state/
+langfuse-state/
+
+# Workflow output artifacts (generated, not source)
+.kiro/workflow-output/*
+!.kiro/workflow-output/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# IDE and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# OS files
+.DS_Store
+Thumbs.db
+*.bak
+
+# Logs
+*.log
+logs/
+
+# Test artifacts
+.hypothesis/
+coverage.xml
+nosetests.xml
+
+# Uploads folder (if present from cloud agent)
+uploads/
+
+# Task3 score state
+.kiro/langfuse-state-local/objective_scores_state.json
+.kiro/langfuse-state-local/submitted_scores.json
+.kiro/langfuse-state-local/pending_scores.jsonl
+
+# Objective checks config (user-specific)
+.kiro/objective-checks.json

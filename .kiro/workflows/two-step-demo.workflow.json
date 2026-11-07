@@ -1,0 +1,27 @@
+{
+  "name": "two-step-demo",
+  "description": "Two-step workflow for testing cross-step correlation and run_id consistency",
+  "inputs": {
+    "target_file": "file"
+  },
+  "steps": [
+    {
+      "type": "step",
+      "id": "analyze",
+      "agent": "wf-planner",
+      "prompt": "You are running the two-step-demo workflow step 1 of 2.\n\nTask: Read {{target_file}} and identify its main purpose in 1-2 sentences. Save your analysis to .kiro/workflow-output/two-step-analysis.md.\n\nFinish by calling send_message with severity info and 'Step 1 complete: analysis saved'.",
+      "artifacts": {
+        "analysis": ".kiro/workflow-output/two-step-analysis.md"
+      }
+    },
+    {
+      "type": "step",
+      "id": "summarize",
+      "agent": "wf-planner",
+      "prompt": "You are running the two-step-demo workflow step 2 of 2.\n\nTask: Read the analysis from .kiro/workflow-output/two-step-analysis.md and {{target_file}}. Write a brief summary (3-4 bullets) to .kiro/workflow-output/two-step-summary.md.\n\nFinish by calling send_message with severity success and 'Step 2 complete: summary saved'.",
+      "artifacts": {
+        "summary": ".kiro/workflow-output/two-step-summary.md"
+      }
+    }
+  ]
+}

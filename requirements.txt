@@ -1,0 +1,4 @@
+# Unit-test / lint dependencies for a clean clone.
+# Does not install Langfuse Cloud, AWS, or any paid service.
+pytest>=8.0
+ruff>=0.6
